@@ -1,43 +1,27 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-
-type RecordType = "expense" | "income";
-type Frequency = "once" | "monthly" | "weekly" | "yearly";
-
-type CashRecord = {
-  id: string;
-  title: string;
-  amount: number;
-  recordType: RecordType;
-  frequency: Frequency;
-  date: string;
-  dayOfMonth: string;
-  dayOfWeek: string;
-  monthOfYear: string;
-  category: string;
-  createdAt: string;
-};
+import Link from "next/link";
+import BottomNav from "@/components/BottomNav";
+import { toDateText } from "@/lib/date";
+import { formatMoney, sumSignedAmounts } from "@/lib/money";
+import {
+  calculateMonthSummary,
+  getCategoryIcon,
+  getEventsForDate,
+  getFrequencyText,
+} from "@/lib/recurrence";
+import { loadCashRecords, saveCashRecords } from "@/lib/storage";
+import type { CashEvent, CashRecord } from "@/types/cash-record";
 
 type CalendarDay = {
   date: Date | null;
   dateText: string;
   dayNumber: number | null;
-  records: CashRecord[];
+  records: CashEvent[];
 };
 
 const weekLabels = ["日", "一", "二", "三", "四", "五", "六"];
-
-function formatMoney(value: number) {
-  const absValue = Math.abs(value);
-  const formatted = `$${absValue.toLocaleString("zh-TW")}`;
-
-  if (value < 0) {
-    return `-${formatted}`;
-  }
-
-  return formatted;
-}
 
 function formatCalendarMoney(value: number) {
   const absValue = Math.abs(value);
@@ -61,91 +45,8 @@ function formatCalendarMoney(value: number) {
   return `${sign}${absValue}`;
 }
 
-function toDateText(date: Date) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-
-  return `${year}-${month}-${day}`;
-}
-
-function getWeekdayText(date: Date) {
-  const weekday = date.getDay();
-
-  if (weekday === 0) return "星期日";
-  if (weekday === 1) return "星期一";
-  if (weekday === 2) return "星期二";
-  if (weekday === 3) return "星期三";
-  if (weekday === 4) return "星期四";
-  if (weekday === 5) return "星期五";
-
-  return "星期六";
-}
-
-function getCategoryIcon(category: string) {
-  if (category === "飲食") return "🍱";
-  if (category === "交通") return "🚌";
-  if (category === "房租") return "🏠";
-  if (category === "電信") return "📱";
-  if (category === "訂閱") return "📦";
-  if (category === "薪水") return "💰";
-  if (category === "保險") return "🛡️";
-  if (category === "學貸") return "🎓";
-
-  return "📝";
-}
-
-function getRecordsForDate(records: CashRecord[], date: Date) {
-  const dateText = toDateText(date);
-  const dayOfMonth = date.getDate();
-  const monthOfYear = date.getMonth() + 1;
-  const weekdayText = getWeekdayText(date);
-
-  return records.filter((record) => {
-    if (record.frequency === "once") {
-      return record.date === dateText;
-    }
-
-    if (record.frequency === "monthly") {
-      return Number(record.dayOfMonth) === dayOfMonth;
-    }
-
-    if (record.frequency === "weekly") {
-      return record.dayOfWeek === weekdayText;
-    }
-
-    if (record.frequency === "yearly") {
-      return (
-        Number(record.monthOfYear) === monthOfYear &&
-        Number(record.dayOfMonth) === dayOfMonth
-      );
-    }
-
-    return false;
-  });
-}
-
-function getDayTotal(records: CashRecord[]) {
-  return records.reduce((sum, record) => {
-    if (record.recordType === "income") {
-      return sum + record.amount;
-    }
-
-    return sum - record.amount;
-  }, 0);
-}
-
 function getMonthTitle(date: Date) {
   return `${date.getFullYear()} 年 ${date.getMonth() + 1} 月`;
-}
-
-function getRecordLabel(record: CashRecord) {
-  if (record.frequency === "once") return "單次";
-  if (record.frequency === "monthly") return "每月固定";
-  if (record.frequency === "weekly") return "每週固定";
-  if (record.frequency === "yearly") return "每年固定";
-
-  return "";
 }
 
 export default function CalendarPage() {
@@ -156,12 +57,10 @@ export default function CalendarPage() {
   );
 
   useEffect(() => {
-    const recordsText = localStorage.getItem("cashRecords");
-    const savedRecords: CashRecord[] = recordsText
-      ? JSON.parse(recordsText)
-      : [];
-
-    setRecords(savedRecords);
+    const timer = window.setTimeout(() => {
+      setRecords(loadCashRecords().records);
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, []);
 
   const calendarDays = useMemo<CalendarDay[]>(() => {
@@ -187,7 +86,7 @@ export default function CalendarPage() {
 
     for (let day = 1; day <= daysInMonth; day++) {
       const date = new Date(year, month, day);
-      const dateRecords = getRecordsForDate(records, date);
+      const dateRecords = getEventsForDate(records, date);
 
       days.push({
         date,
@@ -200,31 +99,38 @@ export default function CalendarPage() {
     return days;
   }, [currentMonth, records]);
 
-  const monthRecords = calendarDays.flatMap((day) => day.records);
-
-  const monthIncome = monthRecords
-    .filter((record) => record.recordType === "income")
-    .reduce((sum, record) => sum + record.amount, 0);
-
-  const monthExpense = monthRecords
-    .filter((record) => record.recordType === "expense")
-    .reduce((sum, record) => sum + record.amount, 0);
-
-  const monthBalance = monthIncome - monthExpense;
+  const monthSummary = calculateMonthSummary(records, currentMonth);
+  const monthIncome = monthSummary.income;
+  const monthExpense = monthSummary.totalExpense;
+  const monthBalance = monthSummary.balance;
 
   const selectedDay = calendarDays.find(
     (day) => day.dateText === selectedDateText
   );
 
   const selectedRecords = selectedDay?.records ?? [];
-  const selectedDayTotal = getDayTotal(selectedRecords);
+  const selectedDayTotal = sumSignedAmounts(selectedRecords);
 
   function saveRecords(nextRecords: CashRecord[]) {
     setRecords(nextRecords);
-    localStorage.setItem("cashRecords", JSON.stringify(nextRecords));
+    saveCashRecords(nextRecords);
   }
 
   function handleDeleteRecord(recordId: string, recordTitle: string) {
+    const target = records.find((record) => record.id === recordId);
+    if (target && target.frequency !== "once") {
+      const todayText = toDateText(new Date());
+      const effectiveTo =
+        todayText < target.effectiveFrom ? target.effectiveFrom : todayText;
+      if (!confirm(`確定停止「${recordTitle}」嗎？過去紀錄會保留。`)) return;
+      saveRecords(
+        records.map((record) =>
+          record.id === recordId ? { ...record, effectiveTo } : record
+        )
+      );
+      return;
+    }
+
     const confirmDelete = confirm(`確定要刪除「${recordTitle}」嗎？`);
 
     if (!confirmDelete) {
@@ -263,7 +169,7 @@ export default function CalendarPage() {
 
   return (
     <main className="min-h-screen bg-gradient-to-b from-slate-900 via-slate-950 to-slate-900 text-white">
-      <div className="mx-auto flex min-h-screen max-w-md flex-col px-5 py-5">
+      <div className="mx-auto flex min-h-screen max-w-md flex-col px-5 pb-28 pt-5">
         <header className="mb-4">
           <p className="text-xs text-slate-400">現金流月曆</p>
 
@@ -335,7 +241,7 @@ export default function CalendarPage() {
                 return <div key={`empty-${index}`} className="h-12" />;
               }
 
-              const dayTotal = getDayTotal(day.records);
+              const dayTotal = sumSignedAmounts(day.records);
               const hasRecords = day.records.length > 0;
               const isSelected = day.dateText === selectedDateText;
 
@@ -388,12 +294,12 @@ export default function CalendarPage() {
               </p>
             </div>
 
-            <a
+            <Link
               href={`/add?date=${selectedDateText}`}
               className="rounded-full bg-sky-400/10 px-4 py-2 text-sm font-bold text-sky-300"
             >
               新增
-            </a>
+            </Link>
           </div>
 
           <div className="mb-3 rounded-3xl bg-white/5 p-4 ring-1 ring-white/10">
@@ -417,7 +323,7 @@ export default function CalendarPage() {
             <div className="space-y-3">
               {selectedRecords.map((record) => (
                 <div
-                  key={`${selectedDateText}-${record.id}`}
+                  key={record.id}
                   className="rounded-3xl bg-white/5 p-4 ring-1 ring-white/10"
                 >
                   <div className="flex items-center justify-between gap-3">
@@ -429,7 +335,7 @@ export default function CalendarPage() {
                       <div className="min-w-0">
                         <p className="truncate font-bold">{record.title}</p>
                         <p className="text-sm text-slate-400">
-                          {record.category}｜{getRecordLabel(record)}
+                          {record.category}｜{getFrequencyText(record.frequency)}
                         </p>
                       </div>
                     </div>
@@ -447,17 +353,17 @@ export default function CalendarPage() {
                       </p>
 
                       <div className="flex gap-2">
-                        <a
-                          href={`/add?editId=${record.id}`}
+                        <Link
+                          href={`/add?editId=${record.recordId}`}
                           className="rounded-full bg-sky-400/10 px-3 py-1 text-xs font-bold text-sky-300"
                         >
                           編輯
-                        </a>
+                        </Link>
 
                         <button
                           type="button"
                           onClick={() =>
-                            handleDeleteRecord(record.id, record.title)
+                            handleDeleteRecord(record.recordId, record.title)
                           }
                           className="rounded-full bg-red-500/10 px-3 py-1 text-xs font-bold text-red-300"
                         >
@@ -472,28 +378,7 @@ export default function CalendarPage() {
           )}
         </section>
 
-        <nav className="sticky bottom-4 mt-6 rounded-full bg-white/10 p-2 backdrop-blur">
-          <div className="grid grid-cols-4 text-center text-xs text-slate-300">
-            <a href="/" className="py-3">
-              首頁
-            </a>
-
-            <a
-              href="/calendar"
-              className="rounded-full bg-white py-3 font-bold text-slate-950"
-            >
-              月曆
-            </a>
-
-            <a href="/add" className="py-3">
-              新增
-            </a>
-
-            <a href="/settings" className="py-3">
-              設定
-            </a>
-          </div>
-        </nav>
+        <BottomNav />
       </div>
     </main>
   );

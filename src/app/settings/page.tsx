@@ -1,99 +1,70 @@
 "use client";
 
 import { useEffect, useState } from "react";
-
-type RecordType = "expense" | "income";
-type Frequency = "once" | "monthly" | "weekly" | "yearly";
-
-type CashRecord = {
-  id: string;
-  title: string;
-  amount: number;
-  recordType: RecordType;
-  frequency: Frequency;
-  date: string;
-  dayOfMonth: string;
-  dayOfWeek: string;
-  monthOfYear: string;
-  category: string;
-  createdAt: string;
-};
-
-function formatMoney(value: number) {
-  const absValue = Math.abs(value);
-  const formatted = `$${absValue.toLocaleString("zh-TW")}`;
-
-  if (value < 0) {
-    return `-${formatted}`;
-  }
-
-  return formatted;
-}
-
-function getSignedAmount(record: CashRecord) {
-  if (record.recordType === "expense") {
-    return -record.amount;
-  }
-
-  return record.amount;
-}
-
-function getRecordTypeText(recordType: RecordType) {
-  if (recordType === "expense") {
-    return "支出";
-  }
-
-  return "收入";
-}
+import Link from "next/link";
+import BottomNav from "@/components/BottomNav";
+import { toDateText } from "@/lib/date";
+import { formatMoney, getSignedAmount } from "@/lib/money";
+import {
+  calculateMonthSummary,
+  getCategoryIcon,
+  getRecordTypeText,
+  isRecurringRecord,
+} from "@/lib/recurrence";
+import {
+  clearCashRecordsSafely,
+  loadCashRecords,
+  saveCashRecords,
+} from "@/lib/storage";
+import {
+  CASH_RECORDS_VERSION,
+  type CashRecord,
+} from "@/types/cash-record";
 
 function getFrequencyText(record: CashRecord) {
   if (record.frequency === "once") {
     return record.date || "單次";
   }
 
+  const activeRange = `${record.effectiveFrom} 起${
+    record.effectiveTo ? `，至 ${record.effectiveTo}` : ""
+  }`;
+
   if (record.frequency === "monthly") {
-    return `每月 ${record.dayOfMonth} 號`;
+    return `每月 ${record.dayOfMonth} 號｜${activeRange}`;
   }
 
   if (record.frequency === "weekly") {
-    return `每週${record.dayOfWeek.replace("星期", "")}`;
+    return `每週${record.dayOfWeek.replace("星期", "")}｜${activeRange}`;
   }
 
   if (record.frequency === "yearly") {
-    return `每年 ${record.monthOfYear} 月 ${record.dayOfMonth} 號`;
+    return `每年 ${record.monthOfYear} 月 ${record.dayOfMonth} 號｜${activeRange}`;
   }
 
   return "";
 }
 
-function getCategoryIcon(category: string) {
-  if (category === "飲食") return "🍱";
-  if (category === "交通") return "🚌";
-  if (category === "房租") return "🏠";
-  if (category === "電信") return "📱";
-  if (category === "訂閱") return "📦";
-  if (category === "薪水") return "💰";
-  if (category === "保險") return "🛡️";
-  if (category === "學貸") return "🎓";
-
-  return "📝";
-}
-
 export default function SettingsPage() {
   const [records, setRecords] = useState<CashRecord[]>([]);
+  const [storageWarning, setStorageWarning] = useState("");
 
   useEffect(() => {
-    const recordsText = localStorage.getItem("cashRecords");
-    const savedRecords: CashRecord[] = recordsText
-      ? JSON.parse(recordsText)
-      : [];
-
-    setRecords(savedRecords);
+    const timer = window.setTimeout(() => {
+      const result = loadCashRecords();
+      setRecords(result.records);
+      if (result.quarantined.length > 0) {
+        setStorageWarning(
+          `偵測到 ${result.quarantined.length} 筆不合法資料，已備份原始內容並隔離。`
+        );
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, []);
 
   function saveRecords(nextRecords: CashRecord[]) {
     setRecords(nextRecords);
-    localStorage.setItem("cashRecords", JSON.stringify(nextRecords));
+    saveCashRecords(nextRecords);
   }
 
   function handleDeleteRecord(recordId: string, recordTitle: string) {
@@ -116,14 +87,37 @@ export default function SettingsPage() {
       return;
     }
 
-    localStorage.removeItem("cashRecords");
-    setRecords([]);
+    const confirmAgain = confirm(
+      "再次確認：清除後只能從先前匯出的備份還原，確定繼續嗎？"
+    );
+    if (!confirmAgain) return;
 
+    clearCashRecordsSafely();
+    setRecords([]);
     alert("已清除所有資料");
   }
 
+  function handleStopRecord(record: CashRecord) {
+    const todayText = toDateText(new Date());
+    const effectiveTo =
+      todayText < record.effectiveFrom ? record.effectiveFrom : todayText;
+    if (!confirm(`確定讓「${record.title}」於 ${effectiveTo} 停止生效嗎？`)) {
+      return;
+    }
+
+    saveRecords(
+      records.map((item) =>
+        item.id === record.id ? { ...item, effectiveTo } : item
+      )
+    );
+  }
+
   function handleExportJson() {
-    const dataText = JSON.stringify(records, null, 2);
+    const dataText = JSON.stringify(
+      { version: CASH_RECORDS_VERSION, records },
+      null,
+      2
+    );
 
     if (records.length === 0) {
       alert("目前沒有資料可以匯出");
@@ -142,17 +136,10 @@ export default function SettingsPage() {
     (record) => record.recordType === "expense"
   );
 
-  const totalIncome = incomeRecords.reduce(
-    (sum, record) => sum + record.amount,
-    0
-  );
-
-  const totalExpense = expenseRecords.reduce(
-    (sum, record) => sum + record.amount,
-    0
-  );
-
-  const balance = totalIncome - totalExpense;
+  const monthSummary = calculateMonthSummary(records, new Date());
+  const totalIncome = monthSummary.income;
+  const totalExpense = monthSummary.totalExpense;
+  const balance = monthSummary.balance;
 
   const onceRecords = records.filter((record) => record.frequency === "once");
 
@@ -168,7 +155,7 @@ export default function SettingsPage() {
     (record) => record.frequency === "yearly"
   );
 
-  const fixedRecords = records.filter((record) => record.frequency !== "once");
+  const fixedRecords = records.filter(isRecurringRecord);
 
   function renderRecordCard(record: CashRecord) {
     const signedAmount = getSignedAmount(record);
@@ -205,20 +192,31 @@ export default function SettingsPage() {
             </p>
 
             <div className="flex gap-2">
-              <a
+              {isRecurringRecord(record) && record.effectiveTo === null ? (
+                <button
+                  type="button"
+                  onClick={() => handleStopRecord(record)}
+                  className="rounded-full bg-amber-500/10 px-3 py-1 text-xs font-bold text-amber-300"
+                >
+                  停止
+                </button>
+              ) : null}
+              <Link
                 href={`/add?editId=${record.id}`}
                 className="rounded-full bg-sky-400/10 px-3 py-1 text-xs font-bold text-sky-300"
               >
                 編輯
-              </a>
+              </Link>
 
-              <button
-                type="button"
-                onClick={() => handleDeleteRecord(record.id, record.title)}
-                className="rounded-full bg-red-500/10 px-3 py-1 text-xs font-bold text-red-300"
-              >
-                刪除
-              </button>
+              {!isRecurringRecord(record) ? (
+                <button
+                  type="button"
+                  onClick={() => handleDeleteRecord(record.id, record.title)}
+                  className="rounded-full bg-red-500/10 px-3 py-1 text-xs font-bold text-red-300"
+                >
+                  刪除
+                </button>
+              ) : null}
             </div>
           </div>
         </div>
@@ -233,6 +231,12 @@ export default function SettingsPage() {
           <p className="text-sm text-slate-400">設定與資料管理</p>
           <h1 className="mt-1 text-3xl font-black tracking-tight">設定</h1>
         </header>
+
+        {storageWarning ? (
+          <section className="mb-5 rounded-3xl bg-amber-500/10 p-4 text-sm text-amber-200 ring-1 ring-amber-400/30">
+            {storageWarning}
+          </section>
+        ) : null}
 
         <section className="rounded-[2rem] bg-gradient-to-br from-sky-400 to-indigo-500 p-5 shadow-2xl">
           <p className="text-sm text-sky-100">目前試算餘額</p>
@@ -345,9 +349,9 @@ export default function SettingsPage() {
               </p>
             </div>
 
-            <a href="/add" className="text-sm text-sky-300">
+            <Link href="/add" className="text-sm text-sky-300">
               新增
-            </a>
+            </Link>
           </div>
 
           {fixedRecords.length === 0 ? (
@@ -414,28 +418,7 @@ export default function SettingsPage() {
           </p>
         </section>
 
-        <nav className="sticky bottom-4 mt-6 rounded-full bg-white/10 p-2 backdrop-blur">
-          <div className="grid grid-cols-4 text-center text-xs text-slate-300">
-            <a href="/" className="py-3">
-              首頁
-            </a>
-
-            <a href="/calendar" className="py-3">
-              月曆
-            </a>
-
-            <a href="/add" className="py-3">
-              新增
-            </a>
-
-            <a
-              href="/settings"
-              className="rounded-full bg-white py-3 font-bold text-slate-950"
-            >
-              設定
-            </a>
-          </div>
-        </nav>
+        <BottomNav />
       </div>
     </main>
   );

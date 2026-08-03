@@ -2,23 +2,17 @@
 
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-
-type RecordType = "expense" | "income";
-type Frequency = "once" | "monthly" | "weekly" | "yearly";
-
-type CashRecord = {
-  id: string;
-  title: string;
-  amount: number;
-  recordType: RecordType;
-  frequency: Frequency;
-  date: string;
-  dayOfMonth: string;
-  dayOfWeek: string;
-  monthOfYear: string;
-  category: string;
-  createdAt: string;
-};
+import BottomNav from "@/components/BottomNav";
+import { isDateText, previousDateText, toDateText } from "@/lib/date";
+import { parsePositiveNtd } from "@/lib/money";
+import { loadCashRecords, saveCashRecords } from "@/lib/storage";
+import {
+  isFrequency,
+  isRecordType,
+  type CashRecord,
+  type Frequency,
+  type RecordType,
+} from "@/types/cash-record";
 
 const categoryOptions = [
   "飲食",
@@ -42,26 +36,8 @@ const weekdayOptions = [
   "星期六",
 ];
 
-function isRecordType(value: string | null): value is RecordType {
-  return value === "expense" || value === "income";
-}
-
-function isFrequency(value: string | null): value is Frequency {
-  return (
-    value === "once" ||
-    value === "monthly" ||
-    value === "weekly" ||
-    value === "yearly"
-  );
-}
-
 function getTodayText() {
-  const today = new Date();
-  const year = today.getFullYear();
-  const month = String(today.getMonth() + 1).padStart(2, "0");
-  const day = String(today.getDate()).padStart(2, "0");
-
-  return `${year}-${month}-${day}`;
+  return toDateText(new Date());
 }
 
 function getDefaultMonth() {
@@ -88,50 +64,58 @@ function AddPageContent() {
   const [monthOfYear, setMonthOfYear] = useState(getDefaultMonth());
   const [category, setCategory] = useState("飲食");
   const [isEditMode, setIsEditMode] = useState(false);
+  const [originalRecord, setOriginalRecord] = useState<CashRecord | null>(null);
+  const [effectiveFrom, setEffectiveFrom] = useState(getTodayText());
 
   useEffect(() => {
-    const recordsText = localStorage.getItem("cashRecords");
-    const savedRecords: CashRecord[] = recordsText
-      ? JSON.parse(recordsText)
-      : [];
+    const timer = window.setTimeout(() => {
+      const savedRecords = loadCashRecords().records;
 
-    if (editId) {
-      const targetRecord = savedRecords.find((record) => record.id === editId);
+      if (editId) {
+        const targetRecord = savedRecords.find((record) => record.id === editId);
 
-      if (!targetRecord) {
-        alert("找不到這筆資料，可能已經被刪除了");
-        router.push("/");
+        if (!targetRecord) {
+          alert("找不到這筆資料，可能已經被刪除了");
+          router.push("/");
+          return;
+        }
+
+        setIsEditMode(true);
+        setOriginalRecord(targetRecord);
+        setTitle(targetRecord.title);
+        setAmount(String(targetRecord.amount));
+        setRecordType(targetRecord.recordType);
+        setFrequency(targetRecord.frequency);
+        setDate(targetRecord.date || getTodayText());
+        setDayOfMonth(targetRecord.dayOfMonth || "1");
+        setDayOfWeek(targetRecord.dayOfWeek || "星期一");
+        setMonthOfYear(targetRecord.monthOfYear || getDefaultMonth());
+        setCategory(targetRecord.category || "其他");
+        setEffectiveFrom(
+          targetRecord.frequency === "once"
+            ? targetRecord.date
+            : getTodayText()
+        );
         return;
       }
 
-      setIsEditMode(true);
-      setTitle(targetRecord.title);
-      setAmount(String(targetRecord.amount));
-      setRecordType(targetRecord.recordType);
-      setFrequency(targetRecord.frequency);
-      setDate(targetRecord.date || getTodayText());
-      setDayOfMonth(targetRecord.dayOfMonth || "1");
-      setDayOfWeek(targetRecord.dayOfWeek || "星期一");
-      setMonthOfYear(targetRecord.monthOfYear || getDefaultMonth());
-      setCategory(targetRecord.category || "其他");
+      setIsEditMode(false);
 
-      return;
-    }
+      if (queryDate && isDateText(queryDate)) {
+        setDate(queryDate);
+        setFrequency("once");
+      }
 
-    setIsEditMode(false);
+      if (isFrequency(queryFrequency)) {
+        setFrequency(queryFrequency);
+      }
 
-    if (queryDate) {
-      setDate(queryDate);
-      setFrequency("once");
-    }
+      if (isRecordType(queryRecordType)) {
+        setRecordType(queryRecordType);
+      }
+    }, 0);
 
-    if (isFrequency(queryFrequency)) {
-      setFrequency(queryFrequency);
-    }
-
-    if (isRecordType(queryRecordType)) {
-      setRecordType(queryRecordType);
-    }
+    return () => window.clearTimeout(timer);
   }, [editId, queryDate, queryFrequency, queryRecordType, router]);
 
   function openDatePicker() {
@@ -150,24 +134,19 @@ function AddPageContent() {
   }
 
   function getRecordsFromStorage() {
-    const recordsText = localStorage.getItem("cashRecords");
-    const savedRecords: CashRecord[] = recordsText
-      ? JSON.parse(recordsText)
-      : [];
-
-    return savedRecords;
+    return loadCashRecords().records;
   }
 
   function validateForm() {
-    const numberAmount = Number(amount);
+    const numberAmount = parsePositiveNtd(amount);
 
     if (!amount.trim()) {
       alert("請輸入金額");
       return false;
     }
 
-    if (Number.isNaN(numberAmount) || numberAmount <= 0) {
-      alert("金額必須大於 0");
+    if (numberAmount === null) {
+      alert("金額必須是大於 0 的新臺幣整數，且不可超過安全整數上限");
       return false;
     }
 
@@ -179,7 +158,7 @@ function AddPageContent() {
     if (frequency === "monthly") {
       const day = Number(dayOfMonth);
 
-      if (!dayOfMonth || day < 1 || day > 31) {
+      if (!Number.isInteger(day) || day < 1 || day > 31) {
         alert("每月幾號請輸入 1 到 31");
         return false;
       }
@@ -189,15 +168,30 @@ function AddPageContent() {
       const month = Number(monthOfYear);
       const day = Number(dayOfMonth);
 
-      if (!monthOfYear || month < 1 || month > 12) {
+      if (!Number.isInteger(month) || month < 1 || month > 12) {
         alert("每年幾月請輸入 1 到 12");
         return false;
       }
 
-      if (!dayOfMonth || day < 1 || day > 31) {
+      if (!Number.isInteger(day) || day < 1 || day > 31) {
         alert("每年幾號請輸入 1 到 31");
         return false;
       }
+    }
+
+    if (frequency !== "once" && !isDateText(effectiveFrom)) {
+      alert("請選擇固定規則的生效日期");
+      return false;
+    }
+
+    if (
+      isEditMode &&
+      originalRecord &&
+      originalRecord.frequency !== "once" &&
+      effectiveFrom <= originalRecord.effectiveFrom
+    ) {
+      alert(`新規則生效日期必須晚於 ${originalRecord.effectiveFrom}`);
+      return false;
     }
 
     return true;
@@ -212,14 +206,48 @@ function AddPageContent() {
 
     const savedRecords = getRecordsFromStorage();
     const finalTitle = title.trim() || category;
-    const numberAmount = Number(amount);
+    const numberAmount = parsePositiveNtd(amount);
+    if (numberAmount === null) return;
 
     if (isEditMode && editId) {
-      const nextRecords = savedRecords.map((record) => {
-        if (record.id !== editId) return record;
+      const target = savedRecords.find((record) => record.id === editId);
+      if (!target) {
+        alert("找不到這筆資料，可能已經被刪除了");
+        return;
+      }
 
-        return {
-          ...record,
+      let nextRecords: CashRecord[];
+
+      if (target.frequency === "once") {
+        nextRecords = savedRecords.map((record) =>
+          record.id === editId
+            ? {
+                ...record,
+                title: finalTitle,
+                amount: numberAmount,
+                recordType,
+                frequency,
+                date,
+                dayOfMonth,
+                dayOfWeek,
+                monthOfYear,
+                category,
+                effectiveFrom: date,
+              }
+            : record
+        );
+      } else {
+        const oldEffectiveTo = previousDateText(effectiveFrom);
+        if (!oldEffectiveTo) return;
+
+        const closedRecords = savedRecords.map((record) =>
+          record.id === editId
+            ? { ...record, effectiveTo: oldEffectiveTo }
+            : record
+        );
+        const replacement: CashRecord = {
+          ...target,
+          id: crypto.randomUUID(),
           title: finalTitle,
           amount: numberAmount,
           recordType,
@@ -229,10 +257,14 @@ function AddPageContent() {
           dayOfWeek,
           monthOfYear,
           category,
+          effectiveFrom,
+          effectiveTo: null,
+          createdAt: new Date().toISOString(),
         };
-      });
+        nextRecords = [replacement, ...closedRecords];
+      }
 
-      localStorage.setItem("cashRecords", JSON.stringify(nextRecords));
+      saveCashRecords(nextRecords);
       alert("已更新資料");
       router.push("/");
       return;
@@ -250,11 +282,13 @@ function AddPageContent() {
       monthOfYear,
       category,
       createdAt: new Date().toISOString(),
+      effectiveFrom: frequency === "once" ? date : effectiveFrom,
+      effectiveTo: null,
     };
 
     const nextRecords = [newRecord, ...savedRecords];
 
-    localStorage.setItem("cashRecords", JSON.stringify(nextRecords));
+    saveCashRecords(nextRecords);
     alert("已儲存資料");
     router.push("/");
   }
@@ -332,7 +366,9 @@ function AddPageContent() {
                 onChange={(event) => setAmount(event.target.value)}
                 className={inputClass}
                 type="number"
-                min="0"
+                min="1"
+                step="1"
+                max={Number.MAX_SAFE_INTEGER}
                 inputMode="numeric"
                 placeholder="例如：1000"
               />
@@ -401,6 +437,25 @@ function AddPageContent() {
 
           <section className="min-h-[132px] rounded-3xl bg-slate-900 p-5 shadow-xl ring-1 ring-slate-800">
             <h2 className="mb-3 text-lg font-bold">時間設定</h2>
+
+            {frequency !== "once" ? (
+              <label className="mb-3 block">
+                <p className="mb-1 text-sm text-slate-300">
+                  {isEditMode ? "新規則生效日期" : "生效日期"}
+                </p>
+                <input
+                  value={effectiveFrom}
+                  onChange={(event) => setEffectiveFrom(event.target.value)}
+                  className={inputClass}
+                  type="date"
+                />
+                {isEditMode && originalRecord?.frequency !== "once" ? (
+                  <p className="mt-2 text-xs text-slate-400">
+                    舊規則會保留至新生效日期前一天，歷史月份不會被改寫。
+                  </p>
+                ) : null}
+              </label>
+            ) : null}
 
             {frequency === "once" ? (
               <label className="block">
@@ -524,28 +579,7 @@ function AddPageContent() {
           </div>
         </form>
 
-        <nav className="sticky bottom-4 z-30 mt-6 rounded-full bg-white/10 p-2 backdrop-blur">
-          <div className="grid grid-cols-4 text-center text-xs text-slate-300">
-            <a href="/" className="py-3">
-              首頁
-            </a>
-
-            <a href="/calendar" className="py-3">
-              月曆
-            </a>
-
-            <a
-              href="/add"
-              className="rounded-full bg-white py-3 font-bold text-slate-950"
-            >
-              新增
-            </a>
-
-            <a href="/settings" className="py-3">
-              設定
-            </a>
-          </div>
-        </nav>
+        <BottomNav />
       </div>
     </main>
   );

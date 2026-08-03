@@ -1,36 +1,42 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# 現金流月曆
 
-## Getting Started
+以月份為核心的個人記帳網頁，計算收入扣除固定支出與單次支出後的剩餘可用金額。資料只保存在目前瀏覽器的 `localStorage`，不需要帳號或後端。
 
-First, run the development server:
+## 功能
+
+- 首頁顯示本月收入、固定支出、單次支出與剩餘金額
+- 快速新增收入或支出
+- 月曆檢視每日現金流
+- 每月、每週及每年固定規則
+- 固定規則生效與停止日期
+- 舊版資料安全遷移、原始備份與無效資料隔離
+
+## 開發
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+開啟 <http://localhost:3000>。
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## 品質檢查
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+npm run lint
+npm run build
+npm test
+```
 
-## Learn More
+## 資料格式
 
-To learn more about Next.js, take a look at the following resources:
+主要 key 維持為 `cashRecords`。目前格式版本為 2：
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```json
+{
+  "version": 2,
+  "records": []
+}
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+第一次讀取舊陣列格式時，程式會先建立 `cashRecordsBackupV1:*` 原始備份，再遷移合法資料。不合法資料會保存在 `cashRecordsQuarantine`，不會直接刪除。

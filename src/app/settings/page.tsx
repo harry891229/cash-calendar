@@ -1,8 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import BottomNav from "@/components/BottomNav";
+import {
+  createCashCalendarBackup,
+  getBackupFilename,
+} from "@/lib/backup";
 import { toDateText } from "@/lib/date";
 import { formatMoney, getSignedAmount } from "@/lib/money";
 import {
@@ -13,13 +17,14 @@ import {
 } from "@/lib/recurrence";
 import {
   clearCashRecordsSafely,
+  getQuarantinedRecords,
   loadCashRecords,
+  previewCashRecordsImport,
+  restoreCashRecordsFromText,
   saveCashRecords,
+  type CashRecordsImportPreview,
 } from "@/lib/storage";
-import {
-  CASH_RECORDS_VERSION,
-  type CashRecord,
-} from "@/types/cash-record";
+import type { CashRecord } from "@/types/cash-record";
 
 function getFrequencyText(record: CashRecord) {
   if (record.frequency === "once") {
@@ -48,14 +53,22 @@ function getFrequencyText(record: CashRecord) {
 export default function SettingsPage() {
   const [records, setRecords] = useState<CashRecord[]>([]);
   const [storageWarning, setStorageWarning] = useState("");
+  const [operationMessage, setOperationMessage] = useState("");
+  const [importError, setImportError] = useState("");
+  const [pendingImport, setPendingImport] = useState<{
+    raw: string;
+    preview: CashRecordsImportPreview;
+  } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
       const result = loadCashRecords();
       setRecords(result.records);
-      if (result.quarantined.length > 0) {
+      const quarantineCount = getQuarantinedRecords().length;
+      if (quarantineCount > 0) {
         setStorageWarning(
-          `偵測到 ${result.quarantined.length} 筆不合法資料，已備份原始內容並隔離。`
+          `目前有 ${quarantineCount} 筆不合法資料已隔離；正式備份檔不包含隔離資料。`
         );
       }
     }, 0);
@@ -80,7 +93,7 @@ export default function SettingsPage() {
 
   function handleClearAll() {
     const confirmClear = confirm(
-      "確定要清除所有資料嗎？這會刪掉目前瀏覽器裡的測試資料。"
+      "確定要清除所有資料嗎？這會刪掉目前瀏覽器裡的全部記帳資料。"
     );
 
     if (!confirmClear) {
@@ -112,20 +125,75 @@ export default function SettingsPage() {
     );
   }
 
-  function handleExportJson() {
-    const dataText = JSON.stringify(
-      { version: CASH_RECORDS_VERSION, records },
-      null,
-      2
-    );
+  function handleDownloadBackup() {
+    const verifiedRecords = loadCashRecords().records;
+    const backup = createCashCalendarBackup(verifiedRecords);
+    const blob = new Blob([JSON.stringify(backup, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = getBackupFilename();
+    link.click();
+    URL.revokeObjectURL(url);
 
-    if (records.length === 0) {
-      alert("目前沒有資料可以匯出");
+    const quarantineCount = getQuarantinedRecords().length;
+    setOperationMessage(
+      quarantineCount > 0
+        ? `備份已下載；${quarantineCount} 筆隔離資料未包含在檔案中。`
+        : "備份檔已下載。"
+    );
+  }
+
+  async function handleImportFile(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    setImportError("");
+    setOperationMessage("");
+    setPendingImport(null);
+    if (!file) return;
+
+    if (!file.name.toLowerCase().endsWith(".json")) {
+      setImportError("僅接受副檔名為 .json 的備份檔。現有資料未變更。");
       return;
     }
 
-    navigator.clipboard.writeText(dataText);
-    alert("資料已複製成 JSON，可先貼到記事本備份");
+    try {
+      const raw = await file.text();
+      const inspected = previewCashRecordsImport(raw);
+      if (!inspected.ok) {
+        setImportError(`${inspected.error} 現有資料未變更。`);
+        return;
+      }
+      setPendingImport({ raw, preview: inspected.preview });
+    } catch {
+      setImportError("無法讀取備份檔。現有資料未變更。");
+    }
+  }
+
+  function handleConfirmImport() {
+    if (!pendingImport) return;
+    const confirmed = confirm(
+      `匯入會完整取代目前 ${records.length} 筆資料。系統會先自動備份現有 cashRecords，確定繼續嗎？`
+    );
+    if (!confirmed) return;
+
+    const restored = restoreCashRecordsFromText(pendingImport.raw);
+    if (!restored.ok) {
+      setImportError(`${restored.error} 現有資料未變更。`);
+      return;
+    }
+
+    const latest = loadCashRecords();
+    setRecords(latest.records);
+    setPendingImport(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    const invalidText = restored.preview.quarantined.length
+      ? `，另有 ${restored.preview.quarantined.length} 筆無效紀錄已隔離`
+      : "";
+    setOperationMessage(
+      `已完整還原 ${latest.records.length} 筆紀錄${invalidText}。匯入前資料已自動備份。`
+    );
   }
 
   const incomeRecords = records.filter(
@@ -383,19 +451,81 @@ export default function SettingsPage() {
         </section>
 
         <section className="mt-6">
-          <h2 className="mb-3 text-lg font-bold">資料操作</h2>
+          <h2 className="mb-1 text-lg font-bold">資料備份與還原</h2>
+          <p className="mb-3 text-sm text-slate-400">
+            匯入預設會完整取代目前資料，執行前會先自動備份。
+          </p>
+
+          {operationMessage ? (
+            <p
+              role="status"
+              className="mb-3 rounded-2xl bg-emerald-400/10 p-3 text-sm text-emerald-200 ring-1 ring-emerald-400/30"
+            >
+              {operationMessage}
+            </p>
+          ) : null}
+
+          {importError ? (
+            <p
+              role="alert"
+              className="mb-3 rounded-2xl bg-red-500/10 p-3 text-sm text-red-200 ring-1 ring-red-400/30"
+            >
+              {importError}
+            </p>
+          ) : null}
 
           <div className="space-y-3">
             <button
               type="button"
-              onClick={handleExportJson}
+              onClick={handleDownloadBackup}
               className="w-full rounded-3xl bg-slate-800 p-4 text-left ring-1 ring-white/10"
             >
-              <p className="font-bold">匯出測試資料</p>
+              <p className="font-bold">下載備份檔</p>
               <p className="mt-1 text-sm text-slate-400">
-                先複製成 JSON，之後可以用來備份或轉移到資料庫
+                下載含 schema version、建立時間與已驗證紀錄的 JSON
               </p>
             </button>
+
+            <label className="block rounded-3xl bg-slate-800 p-4 ring-1 ring-white/10">
+              <span className="font-bold">匯入備份</span>
+              <span className="mt-1 block text-sm text-slate-400">
+                選檔後只會先驗證並顯示摘要，不會立即覆寫
+              </span>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="application/json,.json"
+                onChange={handleImportFile}
+                className="mt-3 block w-full text-sm text-slate-300 file:mr-3 file:rounded-full file:border-0 file:bg-sky-400 file:px-4 file:py-2 file:font-bold file:text-slate-950"
+              />
+            </label>
+
+            {pendingImport ? (
+              <div className="rounded-3xl bg-sky-400/10 p-4 ring-1 ring-sky-400/30">
+                <p className="font-bold text-sky-200">匯入摘要</p>
+                <dl className="mt-3 grid grid-cols-2 gap-2 text-sm">
+                  <div><dt className="text-slate-400">紀錄總數</dt><dd>{pendingImport.preview.records.length}</dd></div>
+                  <div><dt className="text-slate-400">收入筆數</dt><dd>{pendingImport.preview.records.filter((item) => item.recordType === "income").length}</dd></div>
+                  <div><dt className="text-slate-400">支出筆數</dt><dd>{pendingImport.preview.records.filter((item) => item.recordType === "expense").length}</dd></div>
+                  <div><dt className="text-slate-400">固定規則</dt><dd>{pendingImport.preview.records.filter(isRecurringRecord).length}</dd></div>
+                  <div><dt className="text-slate-400">無效紀錄</dt><dd>{pendingImport.preview.quarantined.length}</dd></div>
+                  <div><dt className="text-slate-400">格式</dt><dd>{pendingImport.preview.sourceFormat === "legacy" ? "舊陣列格式" : "v2"}</dd></div>
+                </dl>
+                <p className="mt-3 text-xs text-slate-400">
+                  備份建立時間：{pendingImport.preview.exportedAt ?? "舊格式未提供"}
+                </p>
+                <p className="mt-2 text-xs font-bold text-amber-200">
+                  確認後會完整取代現有資料；無效紀錄會隔離，不會寫入正式紀錄。
+                </p>
+                <button
+                  type="button"
+                  onClick={handleConfirmImport}
+                  className="mt-4 w-full rounded-2xl bg-sky-400 px-4 py-3 font-black text-slate-950"
+                >
+                  確認完整取代並還原
+                </button>
+              </div>
+            ) : null}
 
             <button
               type="button"
@@ -404,7 +534,7 @@ export default function SettingsPage() {
             >
               <p className="font-bold text-red-300">清除全部資料</p>
               <p className="mt-1 text-sm text-red-200/70">
-                只會清除目前瀏覽器裡的測試資料
+                只會清除目前瀏覽器裡的全部記帳資料
               </p>
             </button>
           </div>
@@ -413,8 +543,8 @@ export default function SettingsPage() {
         <section className="mt-6 rounded-3xl bg-white/5 p-4 ring-1 ring-white/10">
           <p className="font-bold">目前版本</p>
           <p className="mt-1 text-sm text-slate-400">
-            這版資料還沒有上雲端，只存在你目前這個瀏覽器。之後接
-            Supabase 後，才會變成登入帳號後跨裝置同步。
+            資料只存在目前瀏覽器，可安裝成 App 並離線使用。請定期下載
+            JSON 備份，避免清除瀏覽器資料後無法還原。
           </p>
         </section>
 

@@ -3,6 +3,7 @@
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import BottomNav from "@/components/BottomNav";
+import { saveFlashMessage } from "@/lib/flash-message";
 import { isDateText, previousDateText, toDateText } from "@/lib/date";
 import { parsePositiveNtd } from "@/lib/money";
 import { loadCashRecords, saveCashRecords } from "@/lib/storage";
@@ -265,7 +266,7 @@ function AddPageContent() {
       }
 
       saveCashRecords(nextRecords);
-      alert("已更新資料");
+      saveFlashMessage("修改成功");
       router.push("/");
       return;
     }
@@ -289,7 +290,7 @@ function AddPageContent() {
     const nextRecords = [newRecord, ...savedRecords];
 
     saveCashRecords(nextRecords);
-    alert("已儲存資料");
+    saveFlashMessage("新增成功");
     router.push("/");
   }
 

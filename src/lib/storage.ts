@@ -22,6 +22,19 @@ export type StorageLoadResult = {
   backupKey: string | null;
 };
 
+export type CashRecordsImportPreview = {
+  records: CashRecord[];
+  quarantined: QuarantinedRecord[];
+  sourceFormat: "v2" | "legacy";
+  totalInput: number;
+  exportedAt: string | null;
+  app: string | null;
+};
+
+export type CashRecordsImportResult =
+  | { ok: true; preview: CashRecordsImportPreview; backupKey: string | null }
+  | { ok: false; error: string };
+
 type StorageLike = Pick<Storage, "getItem" | "setItem">;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -174,6 +187,92 @@ function saveQuarantine(
     CASH_RECORDS_QUARANTINE_KEY,
     JSON.stringify([...existing, ...quarantined])
   );
+}
+
+export function getQuarantinedRecords(
+  storage: StorageLike = localStorage
+): QuarantinedRecord[] {
+  const raw = storage.getItem(CASH_RECORDS_QUARANTINE_KEY);
+  if (!raw) return [];
+
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function previewCashRecordsImport(
+  raw: string
+): { ok: true; preview: CashRecordsImportPreview } | { ok: false; error: string } {
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { ok: false, error: "備份檔不是有效的 JSON。" };
+  }
+
+  const isLegacy = Array.isArray(parsed);
+  const isV2 =
+    isPlainObject(parsed) &&
+    parsed.version === CASH_RECORDS_VERSION &&
+    Array.isArray(parsed.records);
+
+  if (!isLegacy && !isV2) {
+    return { ok: false, error: "不支援的備份格式或 schema version。" };
+  }
+
+  const values: unknown[] = isLegacy
+    ? (parsed as unknown[])
+    : ((parsed as Record<string, unknown>).records as unknown[]);
+  const records: CashRecord[] = [];
+  const quarantined: QuarantinedRecord[] = [];
+  const now = new Date().toISOString();
+
+  for (const value of values) {
+    const result = validateRecord(value, isLegacy);
+    if (result.record) {
+      records.push(result.record);
+    } else {
+      quarantined.push({
+        reason: result.reason ?? "未知資料錯誤",
+        value,
+        quarantinedAt: now,
+      });
+    }
+  }
+
+  const metadata = isV2 ? (parsed as Record<string, unknown>) : null;
+  return {
+    ok: true,
+    preview: {
+      records,
+      quarantined,
+      sourceFormat: isLegacy ? "legacy" : "v2",
+      totalInput: values.length,
+      exportedAt:
+        typeof metadata?.exportedAt === "string" ? metadata.exportedAt : null,
+      app: typeof metadata?.app === "string" ? metadata.app : null,
+    },
+  };
+}
+
+export function restoreCashRecordsFromText(
+  raw: string,
+  storage: StorageLike = localStorage
+): CashRecordsImportResult {
+  const inspected = previewCashRecordsImport(raw);
+  if (!inspected.ok) return inspected;
+
+  const currentRaw = storage.getItem(CASH_RECORDS_KEY);
+  const backupKey =
+    currentRaw === null ? null : saveBackup(storage, currentRaw);
+
+  saveQuarantine(storage, inspected.preview.quarantined);
+  saveCashRecords(inspected.preview.records, storage);
+  return { ok: true, preview: inspected.preview, backupKey };
 }
 
 export function saveCashRecords(

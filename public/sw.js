@@ -1,7 +1,7 @@
-const CACHE_VERSION = "cash-calendar-v2";
+const CACHE_VERSION = "cash-calendar-v5.0.0";
 const PAGE_CACHE = `${CACHE_VERSION}-pages`;
 const ASSET_CACHE = `${CACHE_VERSION}-assets`;
-const OFFLINE_ROUTES = ["/", "/add", "/calendar", "/settings"];
+const OFFLINE_ROUTES = ["/", "/add", "/calendar", "/settings", "/offline"];
 const CORE_ASSETS = [
   "/manifest.webmanifest",
   "/icons/icon-192.png",
@@ -37,7 +37,13 @@ async function precacheAppShell() {
 }
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(precacheAppShell().then(() => self.skipWaiting()));
+  event.waitUntil(precacheAppShell());
+});
+
+self.addEventListener("message", (event) => {
+  if (event.data?.type === "SKIP_WAITING") {
+    void self.skipWaiting();
+  }
 });
 
 self.addEventListener("activate", (event) => {
@@ -64,7 +70,7 @@ async function networkFirst(request) {
     }
     return response;
   } catch {
-    return (await caches.match(request)) || (await caches.match("/"));
+    return (await caches.match(request)) || (await caches.match("/offline"));
   }
 }
 

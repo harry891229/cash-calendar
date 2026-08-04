@@ -1,10 +1,11 @@
 import type { MetadataRoute } from "next";
+import { APP_NAME, APP_SHORT_NAME } from "@/lib/app-info";
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
     id: "/",
-    name: "記帳月曆",
-    short_name: "記帳",
+    name: APP_NAME,
+    short_name: APP_SHORT_NAME,
     description: "用月曆管理收入、固定支出與單次支出的個人記帳工具",
     start_url: "/",
     scope: "/",

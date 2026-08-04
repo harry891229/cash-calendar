@@ -4,6 +4,7 @@ import {
   CASH_CALENDAR_APP_ID,
   createCashCalendarBackup,
 } from "@/lib/backup";
+import { APP_VERSION } from "@/lib/app-info";
 import { createDefaultCategorySettings } from "@/lib/categories";
 import { createDefaultBudgetSettings } from "@/lib/settings-storage";
 import {
@@ -75,6 +76,7 @@ describe("backup export and restore", () => {
       app: CASH_CALENDAR_APP_ID,
       version: CASH_RECORDS_VERSION,
       exportedAt: exportedAt.toISOString(),
+      appVersion: APP_VERSION,
       records: [record()],
       budgetSettings,
       categorySettings,

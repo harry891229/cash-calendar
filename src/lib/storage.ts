@@ -39,6 +39,7 @@ export type CashRecordsImportPreview = {
   totalInput: number;
   exportedAt: string | null;
   app: string | null;
+  appVersion: string | null;
   budgetSettings: BudgetSettings;
   categorySettings: CategorySettings;
   includesBudget: boolean;
@@ -277,6 +278,8 @@ export function previewCashRecordsImport(
       exportedAt:
         typeof metadata?.exportedAt === "string" ? metadata.exportedAt : null,
       app: typeof metadata?.app === "string" ? metadata.app : null,
+      appVersion:
+        typeof metadata?.appVersion === "string" ? metadata.appVersion : null,
       budgetSettings,
       categorySettings,
       includesBudget: isBudgetSettings(rawBudgetSettings),

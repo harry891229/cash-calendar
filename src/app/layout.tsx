@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import FlashToast from "@/components/FlashToast";
 import ServiceWorkerRegistration from "@/components/ServiceWorkerRegistration";
+import { APP_NAME, APP_SHORT_NAME } from "@/lib/app-info";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -15,14 +16,14 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  applicationName: "記帳月曆",
-  title: "記帳月曆",
+  applicationName: APP_NAME,
+  title: APP_NAME,
   description: "以月曆管理收入、固定支出與單次支出的個人記帳工具",
   manifest: "/manifest.webmanifest",
   appleWebApp: {
     capable: true,
     statusBarStyle: "black-translucent",
-    title: "記帳",
+    title: APP_SHORT_NAME,
   },
   icons: {
     icon: [

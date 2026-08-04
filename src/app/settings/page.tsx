@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import BottomNav from "@/components/BottomNav";
+import PwaInstallGuide from "@/components/PwaInstallGuide";
+import { APP_INFO } from "@/lib/app-info";
 import {
   addCustomCategory,
   renameCustomCategory,
@@ -275,12 +277,26 @@ export default function SettingsPage() {
           <button type="button" onClick={clearAll} className="w-full rounded-2xl bg-red-500/10 px-4 py-3 font-black text-red-300 ring-1 ring-red-400/30">清除全部記帳資料</button>
         </Section>
 
-        <Section title="7. App 資訊" description="記帳月曆 v4">
+        <Section title="7. App 資訊" description={`${APP_INFO.name} ${APP_INFO.version}・${APP_INFO.releaseStage}`}>
           <ul className="space-y-2 text-sm text-slate-300">
             <li>資料儲存方式：本機瀏覽器</li>
             <li>尚未支援跨裝置同步</li>
             <li>建議定期下載 JSON 備份，並保存於其他安全位置</li>
           </ul>
+          <div className="mt-5 border-t border-white/10 pt-4">
+            <h3 className="mb-3 font-black">安裝為小 App</h3>
+            <PwaInstallGuide />
+          </div>
+          <div className="mt-5 rounded-2xl bg-amber-400/10 p-4 text-sm text-amber-100 ring-1 ring-amber-300/20">
+            <p className="font-black">正式環境資料提醒</p>
+            <p className="mt-2">資料保存在這台裝置的這個瀏覽器。換手機或清除網站資料不會自動同步。</p>
+            <p className="mt-2">localhost 與正式 HTTPS 網址是不同的儲存空間，資料不會自動帶過去。</p>
+            <ol className="mt-3 list-decimal space-y-1 pl-5">
+              <li>先在 localhost 的設定頁下載 JSON 備份。</li>
+              <li>開啟正式網址，在設定頁匯入該備份。</li>
+              <li>確認記帳、預算與分類後，再開始使用正式網址。</li>
+            </ol>
+          </div>
         </Section>
 
         <BottomNav />

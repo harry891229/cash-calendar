@@ -10,8 +10,15 @@ import {
   setCategoryDisabled,
 } from "@/lib/categories";
 import { createCashCalendarBackup, getBackupFilename } from "@/lib/backup";
-import { toDateText } from "@/lib/date";
 import { formatMoney, parsePositiveNtd } from "@/lib/money";
+import {
+  permanentlyDeleteRecurringVersion,
+  stopRecurringRule,
+} from "@/lib/recurring-rules";
+import {
+  createDefaultSettingsSectionState,
+  toggleSettingsSection,
+} from "@/lib/settings-sections";
 import {
   loadBudgetSettings,
   loadCategorySettings,
@@ -45,6 +52,10 @@ export default function SettingsPage() {
   const [importRaw, setImportRaw] = useState("");
   const [importPreview, setImportPreview] = useState<CashRecordsImportPreview | null>(null);
   const [importFileName, setImportFileName] = useState("");
+  const [deleteCandidate, setDeleteCandidate] = useState<CashRecord | null>(null);
+  const [expandedSections, setExpandedSections] = useState(
+    createDefaultSettingsSectionState
+  );
 
   function refresh() {
     const loadedRecords = loadCashRecords().records;
@@ -123,12 +134,31 @@ export default function SettingsPage() {
 
   function stopRecurring(record: CashRecord) {
     if (!confirm(`確定從今天起停止「${record.title}」？歷史月份會保留。`)) return;
-    const today = toDateText(new Date());
-    const effectiveTo = today < record.effectiveFrom ? record.effectiveFrom : today;
-    const next = records.map((item) => item.id === record.id ? { ...item, effectiveTo } : item);
+    const next = stopRecurringRule(records, record.id, new Date());
     saveCashRecords(next);
     setRecords(next);
     showSuccess("固定支出已停止，歷史資料已保留");
+  }
+
+  function openPermanentDelete(record: CashRecord) {
+    setDeleteCandidate(record);
+  }
+
+  function closePermanentDelete() {
+    setDeleteCandidate(null);
+  }
+
+  function permanentlyDeleteSelectedVersion() {
+    if (!deleteCandidate) return;
+    const next = permanentlyDeleteRecurringVersion(
+      records,
+      deleteCandidate.id,
+      true
+    );
+    saveCashRecords(next);
+    setRecords(next);
+    closePermanentDelete();
+    showSuccess("固定規則版本已永久刪除");
   }
 
   function downloadBackup() {
@@ -186,7 +216,11 @@ export default function SettingsPage() {
     showSuccess("全部記帳資料已清除");
   }
 
-  const recurring = records.filter((record) => record.frequency !== "once" && record.effectiveTo === null);
+  const recurring = records.filter((record) => record.frequency !== "once");
+  const activeRecurringCount = recurring.filter(
+    (record) => record.effectiveTo === null
+  ).length;
+  const stoppedRecurringCount = recurring.length - activeRecurringCount;
 
   return (
     <main className="min-h-screen bg-slate-950 text-white">
@@ -208,7 +242,18 @@ export default function SettingsPage() {
           {budget.monthlyBudget !== null ? <button type="button" onClick={clearBudget} className="mt-3 text-sm font-bold text-slate-400">取消預算設定</button> : null}
         </Section>
 
-        <Section title="2. 分類管理" description="停用或隱藏只會影響新增選項，歷史紀錄仍保留原分類名稱。">
+        <CollapsibleSection
+          title="2. 分類管理"
+          description="停用或隱藏只會影響新增選項，歷史紀錄仍保留原分類名稱。"
+          summary={`目前 ${categories?.categories.length ?? 0} 個分類`}
+          isExpanded={expandedSections.categories}
+          onToggle={() =>
+            setExpandedSections((state) =>
+              toggleSettingsSection(state, "categories")
+            )
+          }
+          accessibleName="展開或收合分類管理"
+        >
           <div className="flex gap-2">
             <input value={newCategory} onChange={(event) => setNewCategory(event.target.value)} placeholder="新增自訂分類" className="h-12 min-w-0 flex-1 rounded-2xl border border-slate-600 bg-slate-950 px-4 outline-none focus:border-sky-300" />
             <button type="button" onClick={addCategory} className="rounded-2xl bg-white px-4 font-black text-slate-950">新增</button>
@@ -237,16 +282,32 @@ export default function SettingsPage() {
               </div>
             ))}
           </div>
-        </Section>
+        </CollapsibleSection>
 
-        <Section title="3. 固定支出管理" description="停止規則會設定結束日期，不會刪除歷史月份。">
+        <CollapsibleSection
+          title="3. 固定規則管理"
+          description="停止會保留歷史；永久刪除會移除選取版本的所有過去與未來顯示。"
+          summary={`有效 ${activeRecurringCount} 個・已停止 ${stoppedRecurringCount} 個`}
+          isExpanded={expandedSections.recurring}
+          onToggle={() =>
+            setExpandedSections((state) =>
+              toggleSettingsSection(state, "recurring")
+            )
+          }
+          accessibleName="展開或收合固定規則管理"
+        >
           {recurring.length === 0 ? <p className="text-sm text-slate-400">目前沒有生效中的固定規則。</p> : recurring.map((record) => (
-            <div key={record.id} className="mb-2 flex items-center justify-between rounded-2xl bg-slate-800 p-3">
-              <div><p className="font-bold">{record.title}</p><p className="text-xs text-slate-400">{record.category}・{formatMoney(record.amount)}</p></div>
-              <button type="button" onClick={() => stopRecurring(record)} className="text-sm font-bold text-red-300">停止</button>
+            <div key={record.id} className="mb-2 rounded-2xl bg-slate-800 p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div><p className="font-bold">{record.title}</p><p className="text-xs text-slate-400">{record.category}・{formatMoney(record.amount)}・{record.effectiveTo === null ? "生效中" : `已於 ${record.effectiveTo} 停止`}</p></div>
+                <div className="flex shrink-0 gap-3">
+                  {record.effectiveTo === null ? <button type="button" onClick={() => stopRecurring(record)} className="text-sm font-bold text-amber-300">停止</button> : null}
+                  <button type="button" onClick={() => openPermanentDelete(record)} className="text-sm font-bold text-red-300">永久刪除</button>
+                </div>
+              </div>
             </div>
           ))}
-        </Section>
+        </CollapsibleSection>
 
         <Section title="4. 資料備份與還原" description="新版備份包含記帳、每月預算與分類設定；舊 v2／v3 備份仍可匯入。">
           <button type="button" onClick={downloadBackup} className="w-full rounded-2xl bg-white px-4 py-3 font-black text-slate-950">下載備份檔</button>
@@ -299,6 +360,26 @@ export default function SettingsPage() {
           </div>
         </Section>
 
+        {deleteCandidate ? (
+          <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-slate-950/85 px-5" role="dialog" aria-modal="true" aria-labelledby="delete-rule-title">
+            <div className="w-full max-w-md rounded-3xl bg-slate-900 p-5 shadow-2xl ring-1 ring-red-400/40">
+              <p className="text-sm font-black text-red-300">高風險操作</p>
+              <h2 id="delete-rule-title" className="mt-2 text-2xl font-black">永久刪除固定規則版本</h2>
+              <div className="mt-4 rounded-2xl bg-red-500/10 p-4 ring-1 ring-red-400/20">
+                <p className="font-black">{deleteCandidate.title}</p>
+                <p className="mt-1 text-lg font-black text-red-200">{formatMoney(deleteCandidate.amount)}</p>
+              </div>
+              <p className="mt-4 text-sm text-slate-300">此操作會永久刪除這個規則版本，過去與未來的顯示都會消失。</p>
+              <p className="mt-2 text-sm font-black text-red-200">無法從畫面復原。</p>
+              <p className="mt-3 text-sm font-bold text-amber-200">目前 v2 schema 沒有版本鏈識別碼，因此預設只刪除目前選取的版本；其他舊版或新版規則不會被刪除。</p>
+              <div className="mt-5 flex gap-3">
+                <button type="button" onClick={closePermanentDelete} className="min-h-12 flex-1 rounded-2xl bg-slate-800 px-4 py-3 font-black">取消</button>
+                <button type="button" onClick={permanentlyDeleteSelectedVersion} className="min-h-12 flex-1 rounded-2xl bg-red-600 px-4 py-3 font-black text-white shadow-lg shadow-red-950/40 ring-1 ring-red-300/30">永久刪除</button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
         <BottomNav />
       </div>
     </main>
@@ -311,6 +392,46 @@ function Section({ title, description, children }: { title: string; description:
       <h2 className="text-lg font-black">{title}</h2>
       <p className="mb-4 mt-1 text-sm text-slate-400">{description}</p>
       {children}
+    </section>
+  );
+}
+
+function CollapsibleSection({
+  title,
+  description,
+  summary,
+  isExpanded,
+  onToggle,
+  accessibleName,
+  children,
+}: {
+  title: string;
+  description: string;
+  summary: string;
+  isExpanded: boolean;
+  onToggle: () => void;
+  accessibleName: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="mb-5 overflow-hidden rounded-3xl bg-white/5 ring-1 ring-white/10">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={isExpanded}
+        aria-label={`${accessibleName}，目前${isExpanded ? "已展開" : "已收合"}`}
+        className="flex min-h-20 w-full items-center justify-between gap-4 px-5 py-4 text-left"
+      >
+        <span>
+          <span className="block text-lg font-black">{title}</span>
+          <span className="mt-1 block text-sm text-slate-400">{description}</span>
+          <span className="mt-2 block text-xs font-bold text-sky-300">{summary}</span>
+        </span>
+        <span aria-hidden="true" className="shrink-0 text-xl text-slate-300">
+          {isExpanded ? "↑" : "↓"}
+        </span>
+      </button>
+      {isExpanded ? <div className="border-t border-white/10 px-5 pb-5 pt-4">{children}</div> : null}
     </section>
   );
 }

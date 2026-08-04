@@ -3,583 +3,253 @@
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import BottomNav from "@/components/BottomNav";
-import { saveFlashMessage } from "@/lib/flash-message";
+import { getActiveCategories } from "@/lib/categories";
 import { isDateText, previousDateText, toDateText } from "@/lib/date";
+import { saveFlashMessage } from "@/lib/flash-message";
 import { parsePositiveNtd } from "@/lib/money";
+import { loadCategorySettings, saveCategorySettings } from "@/lib/settings-storage";
 import { loadCashRecords, saveCashRecords } from "@/lib/storage";
+import { createSubmissionGuard } from "@/lib/submission-guard";
 import {
   isFrequency,
   isRecordType,
+  WEEKDAYS,
   type CashRecord,
   type Frequency,
   type RecordType,
 } from "@/types/cash-record";
+import type { CategorySettings } from "@/types/settings";
 
-const categoryOptions = [
-  "飲食",
-  "交通",
-  "房租",
-  "電信",
-  "訂閱",
-  "薪水",
-  "保險",
-  "學貸",
-  "其他",
-];
-
-const weekdayOptions = [
-  "星期日",
-  "星期一",
-  "星期二",
-  "星期三",
-  "星期四",
-  "星期五",
-  "星期六",
-];
-
-function getTodayText() {
+function todayText() {
   return toDateText(new Date());
-}
-
-function getDefaultMonth() {
-  return String(new Date().getMonth() + 1);
 }
 
 function AddPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const dateInputRef = useRef<HTMLInputElement>(null);
-
+  const guardRef = useRef(createSubmissionGuard());
   const editId = searchParams.get("editId");
-  const queryDate = searchParams.get("date");
-  const queryFrequency = searchParams.get("frequency");
-  const queryRecordType = searchParams.get("recordType");
 
   const [title, setTitle] = useState("");
   const [amount, setAmount] = useState("");
   const [recordType, setRecordType] = useState<RecordType>("expense");
   const [frequency, setFrequency] = useState<Frequency>("once");
-  const [date, setDate] = useState(getTodayText());
+  const [date, setDate] = useState(todayText());
+  const [effectiveFrom, setEffectiveFrom] = useState(todayText());
   const [dayOfMonth, setDayOfMonth] = useState("1");
-  const [dayOfWeek, setDayOfWeek] = useState("星期一");
-  const [monthOfYear, setMonthOfYear] = useState(getDefaultMonth());
-  const [category, setCategory] = useState("飲食");
-  const [isEditMode, setIsEditMode] = useState(false);
+  const [dayOfWeek, setDayOfWeek] = useState<(typeof WEEKDAYS)[number]>(WEEKDAYS[1]);
+  const [monthOfYear, setMonthOfYear] = useState(String(new Date().getMonth() + 1));
+  const [category, setCategory] = useState("其他");
+  const [categorySettings, setCategorySettings] = useState<CategorySettings | null>(null);
   const [originalRecord, setOriginalRecord] = useState<CashRecord | null>(null);
-  const [effectiveFrom, setEffectiveFrom] = useState(getTodayText());
+  const [isSaving, setIsSaving] = useState(false);
+  const [error, setError] = useState("");
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      const savedRecords = loadCashRecords().records;
+      const settings = loadCategorySettings().value;
+      setCategorySettings(settings);
+      const active = getActiveCategories(settings);
+      const last = active.find((item) => item.id === settings.lastUsedExpenseCategoryId);
+      const records = loadCashRecords().records;
 
       if (editId) {
-        const targetRecord = savedRecords.find((record) => record.id === editId);
-
-        if (!targetRecord) {
-          alert("找不到這筆資料，可能已經被刪除了");
-          router.push("/");
+        const target = records.find((record) => record.id === editId);
+        if (!target) {
+          setError("找不到要編輯的記帳資料。");
           return;
         }
-
-        setIsEditMode(true);
-        setOriginalRecord(targetRecord);
-        setTitle(targetRecord.title);
-        setAmount(String(targetRecord.amount));
-        setRecordType(targetRecord.recordType);
-        setFrequency(targetRecord.frequency);
-        setDate(targetRecord.date || getTodayText());
-        setDayOfMonth(targetRecord.dayOfMonth || "1");
-        setDayOfWeek(targetRecord.dayOfWeek || "星期一");
-        setMonthOfYear(targetRecord.monthOfYear || getDefaultMonth());
-        setCategory(targetRecord.category || "其他");
-        setEffectiveFrom(
-          targetRecord.frequency === "once"
-            ? targetRecord.date
-            : getTodayText()
-        );
+        setOriginalRecord(target);
+        setTitle(target.title);
+        setAmount(String(target.amount));
+        setRecordType(target.recordType);
+        setFrequency(target.frequency);
+        setDate(target.date);
+        setEffectiveFrom(target.frequency === "once" ? target.date : todayText());
+        setDayOfMonth(target.dayOfMonth);
+        setDayOfWeek(target.dayOfWeek as (typeof WEEKDAYS)[number]);
+        setMonthOfYear(target.monthOfYear);
+        setCategory(target.category);
         return;
       }
 
-      setIsEditMode(false);
+      if (last) setCategory(last.name);
+      else if (active[0]) setCategory(active[0].name);
 
-      if (queryDate && isDateText(queryDate)) {
-        setDate(queryDate);
-        setFrequency("once");
-      }
-
-      if (isFrequency(queryFrequency)) {
-        setFrequency(queryFrequency);
-      }
-
-      if (isRecordType(queryRecordType)) {
-        setRecordType(queryRecordType);
-      }
+      const queryDate = searchParams.get("date");
+      const queryFrequency = searchParams.get("frequency");
+      const queryRecordType = searchParams.get("recordType");
+      if (queryDate && isDateText(queryDate)) setDate(queryDate);
+      if (isFrequency(queryFrequency)) setFrequency(queryFrequency);
+      if (isRecordType(queryRecordType)) setRecordType(queryRecordType);
     }, 0);
-
     return () => window.clearTimeout(timer);
-  }, [editId, queryDate, queryFrequency, queryRecordType, router]);
+  }, [editId, searchParams]);
 
-  function openDatePicker() {
-    const input = dateInputRef.current as
-      | (HTMLInputElement & { showPicker?: () => void })
-      | null;
-
-    if (!input) return;
-
-    if (input.showPicker) {
-      input.showPicker();
-      return;
-    }
-
-    input.focus();
+  function validate() {
+    const parsed = parsePositiveNtd(amount);
+    if (parsed === null) return "金額必須是新臺幣安全正整數。";
+    if (frequency === "once" && !isDateText(date)) return "請選擇有效日期。";
+    if (frequency !== "once" && !isDateText(effectiveFrom)) return "請選擇有效生效日期。";
+    const day = Number(dayOfMonth);
+    if ((frequency === "monthly" || frequency === "yearly") && (!Number.isInteger(day) || day < 1 || day > 31)) return "日期必須介於 1 到 31。";
+    const month = Number(monthOfYear);
+    if (frequency === "yearly" && (!Number.isInteger(month) || month < 1 || month > 12)) return "月份必須介於 1 到 12。";
+    if (originalRecord?.frequency !== "once" && originalRecord && effectiveFrom <= originalRecord.effectiveFrom) return `新規則生效日必須晚於 ${originalRecord.effectiveFrom}。`;
+    return null;
   }
 
-  function getRecordsFromStorage() {
-    return loadCashRecords().records;
-  }
-
-  function validateForm() {
-    const numberAmount = parsePositiveNtd(amount);
-
-    if (!amount.trim()) {
-      alert("請輸入金額");
-      return false;
-    }
-
-    if (numberAmount === null) {
-      alert("金額必須是大於 0 的新臺幣整數，且不可超過安全整數上限");
-      return false;
-    }
-
-    if (frequency === "once" && !date) {
-      alert("請選擇發生日期");
-      return false;
-    }
-
-    if (frequency === "monthly") {
-      const day = Number(dayOfMonth);
-
-      if (!Number.isInteger(day) || day < 1 || day > 31) {
-        alert("每月幾號請輸入 1 到 31");
-        return false;
-      }
-    }
-
-    if (frequency === "yearly") {
-      const month = Number(monthOfYear);
-      const day = Number(dayOfMonth);
-
-      if (!Number.isInteger(month) || month < 1 || month > 12) {
-        alert("每年幾月請輸入 1 到 12");
-        return false;
-      }
-
-      if (!Number.isInteger(day) || day < 1 || day > 31) {
-        alert("每年幾號請輸入 1 到 31");
-        return false;
-      }
-    }
-
-    if (frequency !== "once" && !isDateText(effectiveFrom)) {
-      alert("請選擇固定規則的生效日期");
-      return false;
-    }
-
-    if (
-      isEditMode &&
-      originalRecord &&
-      originalRecord.frequency !== "once" &&
-      effectiveFrom <= originalRecord.effectiveFrom
-    ) {
-      alert(`新規則生效日期必須晚於 ${originalRecord.effectiveFrom}`);
-      return false;
-    }
-
-    return true;
+  function rememberCategory() {
+    if (!categorySettings || recordType !== "expense") return;
+    const selected = categorySettings.categories.find((item) => item.name === category);
+    if (!selected) return;
+    const next = { ...categorySettings, lastUsedExpenseCategoryId: selected.id };
+    saveCategorySettings(next);
+    setCategorySettings(next);
   }
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!guardRef.current.tryLock()) return;
+    const validationError = validate();
+    if (validationError) {
+      guardRef.current.unlock();
+      setError(validationError);
+      return;
+    }
+    setError("");
+    setIsSaving(true);
 
-    const isValid = validateForm();
+    try {
+      const records = loadCashRecords().records;
+      const parsedAmount = parsePositiveNtd(amount);
+      if (parsedAmount === null) throw new Error("金額格式不合法");
+      const finalTitle = title.trim() || category;
 
-    if (!isValid) return;
-
-    const savedRecords = getRecordsFromStorage();
-    const finalTitle = title.trim() || category;
-    const numberAmount = parsePositiveNtd(amount);
-    if (numberAmount === null) return;
-
-    if (isEditMode && editId) {
-      const target = savedRecords.find((record) => record.id === editId);
-      if (!target) {
-        alert("找不到這筆資料，可能已經被刪除了");
+      if (originalRecord && editId) {
+        let nextRecords: CashRecord[];
+        if (originalRecord.frequency === "once") {
+          nextRecords = records.map((record) => record.id === editId ? {
+            ...record,
+            title: finalTitle,
+            amount: parsedAmount,
+            recordType,
+            frequency,
+            date,
+            dayOfMonth,
+            dayOfWeek,
+            monthOfYear,
+            category,
+            effectiveFrom: frequency === "once" ? date : effectiveFrom,
+            effectiveTo: null,
+          } : record);
+        } else {
+          const oldEffectiveTo = previousDateText(effectiveFrom);
+          if (!oldEffectiveTo) throw new Error("無法建立歷史結束日期");
+          const closed = records.map((record) => record.id === editId ? { ...record, effectiveTo: oldEffectiveTo } : record);
+          const replacement: CashRecord = {
+            ...originalRecord,
+            id: crypto.randomUUID(),
+            title: finalTitle,
+            amount: parsedAmount,
+            recordType,
+            frequency,
+            date,
+            dayOfMonth,
+            dayOfWeek,
+            monthOfYear,
+            category,
+            effectiveFrom,
+            effectiveTo: null,
+            createdAt: new Date().toISOString(),
+          };
+          nextRecords = [replacement, ...closed];
+        }
+        saveCashRecords(nextRecords);
+        rememberCategory();
+        saveFlashMessage("修改成功");
+        router.push("/");
         return;
       }
 
-      let nextRecords: CashRecord[];
-
-      if (target.frequency === "once") {
-        nextRecords = savedRecords.map((record) =>
-          record.id === editId
-            ? {
-                ...record,
-                title: finalTitle,
-                amount: numberAmount,
-                recordType,
-                frequency,
-                date,
-                dayOfMonth,
-                dayOfWeek,
-                monthOfYear,
-                category,
-                effectiveFrom: date,
-              }
-            : record
-        );
-      } else {
-        const oldEffectiveTo = previousDateText(effectiveFrom);
-        if (!oldEffectiveTo) return;
-
-        const closedRecords = savedRecords.map((record) =>
-          record.id === editId
-            ? { ...record, effectiveTo: oldEffectiveTo }
-            : record
-        );
-        const replacement: CashRecord = {
-          ...target,
-          id: crypto.randomUUID(),
-          title: finalTitle,
-          amount: numberAmount,
-          recordType,
-          frequency,
-          date,
-          dayOfMonth,
-          dayOfWeek,
-          monthOfYear,
-          category,
-          effectiveFrom,
-          effectiveTo: null,
-          createdAt: new Date().toISOString(),
-        };
-        nextRecords = [replacement, ...closedRecords];
-      }
-
-      saveCashRecords(nextRecords);
-      saveFlashMessage("修改成功");
+      const newRecord: CashRecord = {
+        id: crypto.randomUUID(),
+        title: finalTitle,
+        amount: parsedAmount,
+        recordType,
+        frequency,
+        date,
+        dayOfMonth,
+        dayOfWeek,
+        monthOfYear,
+        category,
+        createdAt: new Date().toISOString(),
+        effectiveFrom: frequency === "once" ? date : effectiveFrom,
+        effectiveTo: null,
+      };
+      saveCashRecords([newRecord, ...records]);
+      rememberCategory();
+      saveFlashMessage("新增成功");
       router.push("/");
-      return;
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "儲存失敗");
+      setIsSaving(false);
+      guardRef.current.unlock();
     }
-
-    const newRecord: CashRecord = {
-      id: crypto.randomUUID(),
-      title: finalTitle,
-      amount: numberAmount,
-      recordType,
-      frequency,
-      date,
-      dayOfMonth,
-      dayOfWeek,
-      monthOfYear,
-      category,
-      createdAt: new Date().toISOString(),
-      effectiveFrom: frequency === "once" ? date : effectiveFrom,
-      effectiveTo: null,
-    };
-
-    const nextRecords = [newRecord, ...savedRecords];
-
-    saveCashRecords(nextRecords);
-    saveFlashMessage("新增成功");
-    router.push("/");
   }
 
-  const inputClass =
-    "h-12 w-full rounded-2xl border border-slate-500 bg-slate-950 px-4 text-white outline-none placeholder:text-slate-500 focus:border-sky-300 focus:ring-2 focus:ring-sky-300/30";
-
-  const selectClass =
-    "h-12 w-full appearance-none rounded-2xl border border-slate-500 bg-slate-950 px-4 text-white outline-none focus:border-sky-300 focus:ring-2 focus:ring-sky-300/30";
-
-  const optionClass = "bg-slate-900 text-white";
-
-  function getChoiceButtonClass(isActive: boolean) {
-    if (isActive) {
-      return "rounded-2xl bg-white px-4 py-3 font-black text-slate-950 shadow-lg";
-    }
-
-    return "rounded-2xl px-4 py-3 font-bold text-white";
-  }
+  const activeCategories = categorySettings ? getActiveCategories(categorySettings) : [];
+  const visibleCategories = activeCategories.some((item) => item.name === category)
+    ? activeCategories
+    : category
+      ? [{ id: "historical", name: category, isSystem: false, disabled: true, createdAt: "" }, ...activeCategories]
+      : activeCategories;
+  const inputClass = "h-12 w-full rounded-2xl border border-slate-600 bg-slate-950 px-4 text-white outline-none focus:border-sky-300";
 
   return (
     <main className="min-h-screen bg-slate-950 text-white">
-      <style jsx global>{`
-        input[type="date"] {
-          color-scheme: dark;
-        }
-
-        input[type="date"]::-webkit-calendar-picker-indicator {
-          opacity: 0;
-          display: none;
-        }
-      `}</style>
-
-      <div className="mx-auto flex min-h-screen max-w-md flex-col px-5 pb-28 pt-5">
-        <header className="mb-6">
-          <p className="text-sm text-slate-300">
-            {isEditMode ? "修改原本那筆資料" : "建立新的收入或支出"}
-          </p>
-
-          <h1 className="mt-1 text-3xl font-black tracking-tight">
-            {isEditMode ? "編輯這筆收支" : "新增一筆收支"}
-          </h1>
+      <div className="mx-auto min-h-screen max-w-md px-5 pb-28 pt-6">
+        <header className="mb-5">
+          <p className="text-sm text-slate-400">{originalRecord ? "保留歷史的安全編輯" : "快速完成一筆常用記帳"}</p>
+          <h1 className="mt-1 text-3xl font-black">{originalRecord ? "編輯記帳" : "新增一筆收支"}</h1>
         </header>
 
-        {isEditMode ? (
-          <section className="mb-5 rounded-3xl bg-sky-950 p-4 ring-1 ring-sky-400/40">
-            <p className="font-bold text-sky-200">目前是編輯模式</p>
-            <p className="mt-1 text-sm text-slate-300">
-              儲存後會更新原本那筆資料，不會新增一筆。
-            </p>
-          </section>
-        ) : null}
+        {error ? <p role="alert" className="mb-4 rounded-2xl bg-red-500/10 px-4 py-3 text-sm font-bold text-red-200 ring-1 ring-red-400/30">{error}</p> : null}
 
-        <form onSubmit={handleSubmit} className="space-y-1">
-          <section className="rounded-3xl bg-slate-900 p-5 shadow-xl ring-1 ring-slate-800">
-            <h2 className="mb-3 text-lg font-bold">基本資料</h2>
-
-            <label className="block">
-              <p className="mb-1 text-sm text-slate-300">名稱</p>
-              <input
-                value={title}
-                onChange={(event) => setTitle(event.target.value)}
-                className={inputClass}
-                placeholder="例如：午餐、房租、薪水"
-              />
-              <p className="mt-2 text-xs text-slate-400">
-                可以不填，不填會自動用分類名稱。
-              </p>
-            </label>
-
-            <label className="mt-3 block">
-              <p className="mb-1 text-sm text-slate-300">金額</p>
-              <input
-                value={amount}
-                onChange={(event) => setAmount(event.target.value)}
-                className={inputClass}
-                type="number"
-                min="1"
-                step="1"
-                max={Number.MAX_SAFE_INTEGER}
-                inputMode="numeric"
-                placeholder="例如：1000"
-              />
-            </label>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <section className="rounded-3xl bg-slate-900 p-5 ring-1 ring-slate-800">
+            <label><span className="mb-1 block text-sm text-slate-300">金額</span><input autoFocus value={amount} onChange={(event) => setAmount(event.target.value)} type="text" inputMode="numeric" placeholder="例如 120" className={`${inputClass} text-xl font-black`} /></label>
+            <label className="mt-3 block"><span className="mb-1 block text-sm text-slate-300">備註（選填）</span><input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="留空會使用分類名稱" className={inputClass} /></label>
           </section>
 
-          <section className="rounded-3xl bg-slate-900 p-5 shadow-xl ring-1 ring-slate-800">
-            <h2 className="mb-3 text-lg font-bold">類型</h2>
-
-            <div className="grid grid-cols-2 gap-3">
-              <button
-                type="button"
-                onClick={() => setRecordType("expense")}
-                className={getChoiceButtonClass(recordType === "expense")}
-              >
-                支出
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setRecordType("income")}
-                className={getChoiceButtonClass(recordType === "income")}
-              >
-                收入
-              </button>
+          <section className="rounded-3xl bg-slate-900 p-5 ring-1 ring-slate-800">
+            <h2 className="mb-3 font-bold">快速選分類</h2>
+            <div className="grid grid-cols-3 gap-2">
+              {visibleCategories.map((item) => <button key={item.id} type="button" onClick={() => setCategory(item.name)} className={category === item.name ? "rounded-2xl bg-sky-400 px-2 py-3 text-sm font-black text-slate-950" : "rounded-2xl bg-slate-800 px-2 py-3 text-sm font-bold text-slate-200"}>{item.name}</button>)}
             </div>
           </section>
 
-          <section className="rounded-3xl bg-slate-900 p-5 shadow-xl ring-1 ring-slate-800">
-            <h2 className="mb-3 text-lg font-bold">週期</h2>
-
-            <div className="grid grid-cols-2 gap-3">
-              <button
-                type="button"
-                onClick={() => setFrequency("once")}
-                className={getChoiceButtonClass(frequency === "once")}
-              >
-                單次
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setFrequency("monthly")}
-                className={getChoiceButtonClass(frequency === "monthly")}
-              >
-                每月
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setFrequency("weekly")}
-                className={getChoiceButtonClass(frequency === "weekly")}
-              >
-                每週
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setFrequency("yearly")}
-                className={getChoiceButtonClass(frequency === "yearly")}
-              >
-                每年
-              </button>
+          <section className="rounded-3xl bg-slate-900 p-5 ring-1 ring-slate-800">
+            <div className="grid grid-cols-2 gap-2">
+              <button type="button" onClick={() => setRecordType("expense")} className={recordType === "expense" ? "rounded-2xl bg-white py-3 font-black text-slate-950" : "rounded-2xl bg-slate-800 py-3 font-bold"}>支出</button>
+              <button type="button" onClick={() => setRecordType("income")} className={recordType === "income" ? "rounded-2xl bg-white py-3 font-black text-slate-950" : "rounded-2xl bg-slate-800 py-3 font-bold"}>收入</button>
             </div>
+            <label className="mt-3 block"><span className="mb-1 block text-sm text-slate-300">日期</span><input value={date} onChange={(event) => setDate(event.target.value)} type="date" className={inputClass} /></label>
           </section>
 
-          <section className="min-h-[132px] rounded-3xl bg-slate-900 p-5 shadow-xl ring-1 ring-slate-800">
-            <h2 className="mb-3 text-lg font-bold">時間設定</h2>
+          <details className="rounded-3xl bg-slate-900 p-5 ring-1 ring-slate-800" open={frequency !== "once"}>
+            <summary className="cursor-pointer font-bold">進階：固定規則</summary>
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              {(["once", "monthly", "weekly", "yearly"] as Frequency[]).map((item) => <button key={item} type="button" onClick={() => setFrequency(item)} className={frequency === item ? "rounded-xl bg-sky-400 py-2 font-bold text-slate-950" : "rounded-xl bg-slate-800 py-2 text-sm"}>{item === "once" ? "單次" : item === "monthly" ? "每月" : item === "weekly" ? "每週" : "每年"}</button>)}
+            </div>
+            {frequency !== "once" ? <label className="mt-3 block"><span className="mb-1 block text-sm text-slate-300">生效日期</span><input value={effectiveFrom} onChange={(event) => setEffectiveFrom(event.target.value)} type="date" className={inputClass} /></label> : null}
+            {frequency === "monthly" || frequency === "yearly" ? <label className="mt-3 block"><span className="mb-1 block text-sm text-slate-300">每次日期（1～31）</span><input value={dayOfMonth} onChange={(event) => setDayOfMonth(event.target.value)} inputMode="numeric" className={inputClass} /></label> : null}
+            {frequency === "weekly" ? <label className="mt-3 block"><span className="mb-1 block text-sm text-slate-300">星期</span><select value={dayOfWeek} onChange={(event) => setDayOfWeek(event.target.value as (typeof WEEKDAYS)[number])} className={inputClass}>{WEEKDAYS.map((weekday) => <option key={weekday}>{weekday}</option>)}</select></label> : null}
+            {frequency === "yearly" ? <label className="mt-3 block"><span className="mb-1 block text-sm text-slate-300">月份（1～12）</span><input value={monthOfYear} onChange={(event) => setMonthOfYear(event.target.value)} inputMode="numeric" className={inputClass} /></label> : null}
+          </details>
 
-            {frequency !== "once" ? (
-              <label className="mb-3 block">
-                <p className="mb-1 text-sm text-slate-300">
-                  {isEditMode ? "新規則生效日期" : "生效日期"}
-                </p>
-                <input
-                  value={effectiveFrom}
-                  onChange={(event) => setEffectiveFrom(event.target.value)}
-                  className={inputClass}
-                  type="date"
-                />
-                {isEditMode && originalRecord?.frequency !== "once" ? (
-                  <p className="mt-2 text-xs text-slate-400">
-                    舊規則會保留至新生效日期前一天，歷史月份不會被改寫。
-                  </p>
-                ) : null}
-              </label>
-            ) : null}
-
-            {frequency === "once" ? (
-              <label className="block">
-                <p className="mb-1 text-sm text-slate-300">發生日期</p>
-
-                <div className="grid grid-cols-[1fr_auto] gap-2">
-                  <input
-                    ref={dateInputRef}
-                    value={date}
-                    onChange={(event) => setDate(event.target.value)}
-                    className={inputClass}
-                    type="date"
-                  />
-
-                  <button
-                    type="button"
-                    onClick={openDatePicker}
-                    className="h-12 rounded-2xl bg-white px-4 text-sm font-black text-slate-950 shadow-lg"
-                  >
-                    選日期
-                  </button>
-                </div>
-              </label>
-            ) : null}
-
-            {frequency === "monthly" ? (
-              <label className="block">
-                <p className="mb-1 text-sm text-slate-300">每月幾號</p>
-                <input
-                  value={dayOfMonth}
-                  onChange={(event) => setDayOfMonth(event.target.value)}
-                  className={inputClass}
-                  type="number"
-                  min="1"
-                  max="31"
-                  placeholder="例如：7"
-                />
-              </label>
-            ) : null}
-
-            {frequency === "weekly" ? (
-              <label className="block">
-                <p className="mb-1 text-sm text-slate-300">每週星期幾</p>
-                <select
-                  value={dayOfWeek}
-                  onChange={(event) => setDayOfWeek(event.target.value)}
-                  className={selectClass}
-                >
-                  {weekdayOptions.map((weekday) => (
-                    <option
-                      key={weekday}
-                      value={weekday}
-                      className={optionClass}
-                    >
-                      {weekday}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            ) : null}
-
-            {frequency === "yearly" ? (
-              <div className="grid grid-cols-2 gap-3">
-                <label className="block">
-                  <p className="mb-1 text-sm text-slate-300">每年幾月</p>
-                  <input
-                    value={monthOfYear}
-                    onChange={(event) => setMonthOfYear(event.target.value)}
-                    className={inputClass}
-                    type="number"
-                    min="1"
-                    max="12"
-                    placeholder="例如：6"
-                  />
-                </label>
-
-                <label className="block">
-                  <p className="mb-1 text-sm text-slate-300">幾號</p>
-                  <input
-                    value={dayOfMonth}
-                    onChange={(event) => setDayOfMonth(event.target.value)}
-                    className={inputClass}
-                    type="number"
-                    min="1"
-                    max="31"
-                    placeholder="例如：10"
-                  />
-                </label>
-              </div>
-            ) : null}
-          </section>
-
-          <section className="rounded-3xl bg-slate-900 p-5 shadow-xl ring-1 ring-slate-800">
-            <h2 className="mb-3 text-lg font-bold">分類</h2>
-
-            <select
-              value={category}
-              onChange={(event) => setCategory(event.target.value)}
-              className={selectClass}
-            >
-              {categoryOptions.map((item) => (
-                <option key={item} value={item} className={optionClass}>
-                  {item}
-                </option>
-              ))}
-            </select>
-          </section>
-
-          <div className="sticky bottom-20 z-20 pt-3">
-            <button
-              type="submit"
-              className="w-full rounded-3xl px-4 py-4 text-lg font-black shadow-2xl"
-              style={{
-                backgroundColor: "#38bdf8",
-                color: "#020617",
-                boxShadow: "0 18px 45px rgba(56, 189, 248, 0.25)",
-              }}
-            >
-              {isEditMode ? "更新資料" : "儲存"}
-            </button>
-          </div>
+          <button type="submit" disabled={isSaving} className="sticky bottom-20 z-20 w-full rounded-3xl bg-sky-400 px-4 py-4 text-lg font-black text-slate-950 shadow-2xl disabled:cursor-not-allowed disabled:opacity-60">{isSaving ? "儲存中…" : originalRecord ? "儲存修改" : "儲存記帳"}</button>
         </form>
-
         <BottomNav />
       </div>
     </main>
@@ -587,9 +257,5 @@ function AddPageContent() {
 }
 
 export default function AddPage() {
-  return (
-    <Suspense fallback={null}>
-      <AddPageContent />
-    </Suspense>
-  );
+  return <Suspense fallback={null}><AddPageContent /></Suspense>;
 }

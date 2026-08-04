@@ -1,5 +1,14 @@
 import { isDateText } from "@/lib/date";
 import { isPositiveNtd } from "@/lib/money";
+import { createDefaultCategorySettings } from "@/lib/categories";
+import {
+  backupCurrentSettings,
+  createDefaultBudgetSettings,
+  isBudgetSettings,
+  isCategorySettings,
+  saveBudgetSettings,
+  saveCategorySettings,
+} from "@/lib/settings-storage";
 import {
   CASH_RECORDS_VERSION,
   isFrequency,
@@ -10,6 +19,7 @@ import {
   type CashRecordsEnvelope,
   type QuarantinedRecord,
 } from "@/types/cash-record";
+import type { BudgetSettings, CategorySettings } from "@/types/settings";
 
 export const CASH_RECORDS_KEY = "cashRecords";
 export const CASH_RECORDS_QUARANTINE_KEY = "cashRecordsQuarantine";
@@ -29,6 +39,10 @@ export type CashRecordsImportPreview = {
   totalInput: number;
   exportedAt: string | null;
   app: string | null;
+  budgetSettings: BudgetSettings;
+  categorySettings: CategorySettings;
+  includesBudget: boolean;
+  includesCustomCategories: boolean;
 };
 
 export type CashRecordsImportResult =
@@ -245,6 +259,14 @@ export function previewCashRecordsImport(
   }
 
   const metadata = isV2 ? (parsed as Record<string, unknown>) : null;
+  const rawBudgetSettings = metadata?.budgetSettings;
+  const rawCategorySettings = metadata?.categorySettings;
+  const budgetSettings = isBudgetSettings(rawBudgetSettings)
+    ? rawBudgetSettings
+    : createDefaultBudgetSettings();
+  const categorySettings = isCategorySettings(rawCategorySettings)
+    ? rawCategorySettings
+    : createDefaultCategorySettings();
   return {
     ok: true,
     preview: {
@@ -255,6 +277,12 @@ export function previewCashRecordsImport(
       exportedAt:
         typeof metadata?.exportedAt === "string" ? metadata.exportedAt : null,
       app: typeof metadata?.app === "string" ? metadata.app : null,
+      budgetSettings,
+      categorySettings,
+      includesBudget: isBudgetSettings(rawBudgetSettings),
+      includesCustomCategories:
+        isCategorySettings(rawCategorySettings) &&
+        rawCategorySettings.categories.some((category) => !category.isSystem),
     },
   };
 }
@@ -270,8 +298,11 @@ export function restoreCashRecordsFromText(
   const backupKey =
     currentRaw === null ? null : saveBackup(storage, currentRaw);
 
+  backupCurrentSettings(storage);
   saveQuarantine(storage, inspected.preview.quarantined);
   saveCashRecords(inspected.preview.records, storage);
+  saveBudgetSettings(inspected.preview.budgetSettings, storage);
+  saveCategorySettings(inspected.preview.categorySettings, storage);
   return { ok: true, preview: inspected.preview, backupKey };
 }
 

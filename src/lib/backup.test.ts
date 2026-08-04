@@ -4,6 +4,8 @@ import {
   CASH_CALENDAR_APP_ID,
   createCashCalendarBackup,
 } from "@/lib/backup";
+import { createDefaultCategorySettings } from "@/lib/categories";
+import { createDefaultBudgetSettings } from "@/lib/settings-storage";
 import {
   CASH_RECORDS_BACKUP_PREFIX,
   CASH_RECORDS_KEY,
@@ -60,13 +62,22 @@ function envelope(records: unknown[]) {
 describe("backup export and restore", () => {
   it("creates a backup with version, records, exportedAt and app identifier", () => {
     const exportedAt = new Date("2026-08-03T01:02:03.000Z");
-    const backup = createCashCalendarBackup([record()], exportedAt);
+    const budgetSettings = createDefaultBudgetSettings();
+    const categorySettings = createDefaultCategorySettings();
+    const backup = createCashCalendarBackup(
+      [record()],
+      budgetSettings,
+      categorySettings,
+      exportedAt
+    );
 
     expect(backup).toEqual({
       app: CASH_CALENDAR_APP_ID,
       version: CASH_RECORDS_VERSION,
       exportedAt: exportedAt.toISOString(),
       records: [record()],
+      budgetSettings,
+      categorySettings,
     });
   });
 

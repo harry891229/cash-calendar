@@ -3,6 +3,7 @@ import { calculateBudgetStatus, getRemainingDaysInMonth } from "@/lib/budget";
 import {
   addCustomCategory,
   createDefaultCategorySettings,
+  ensureSystemCategories,
   getActiveCategories,
   renameCustomCategory,
   setCategoryDisabled,
@@ -79,6 +80,35 @@ describe("monthly budget", () => {
 });
 
 describe("category settings", () => {
+  it("includes salary as a system category", () => {
+    expect(createDefaultCategorySettings().categories).toContainEqual(
+      expect.objectContaining({
+        id: "system-salary",
+        name: "薪水",
+        isSystem: true,
+        disabled: false,
+      })
+    );
+  });
+
+  it("adds a missing salary category to existing settings without replacing custom categories", () => {
+    const oldSettings = createDefaultCategorySettings();
+    oldSettings.categories = oldSettings.categories.filter(
+      (category) => category.id !== "system-salary"
+    );
+    const withCustom = addCustomCategory(
+      oldSettings,
+      "獎金",
+      "custom-bonus",
+      "2026-09-19T00:00:00.000Z"
+    );
+
+    const migrated = ensureSystemCategories(withCustom);
+
+    expect(migrated.categories.some((category) => category.id === "system-salary")).toBe(true);
+    expect(migrated.categories.some((category) => category.id === "custom-bonus")).toBe(true);
+  });
+
   it("rejects duplicate names", () => {
     expect(() => addCustomCategory(createDefaultCategorySettings(), "餐飲", "custom")).toThrow("不可重複");
   });

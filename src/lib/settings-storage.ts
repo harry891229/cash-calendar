@@ -1,4 +1,7 @@
-import { createDefaultCategorySettings } from "@/lib/categories";
+import {
+  createDefaultCategorySettings,
+  ensureSystemCategories,
+} from "@/lib/categories";
 import { isPositiveNtd } from "@/lib/money";
 import {
   BUDGET_SETTINGS_VERSION,
@@ -91,7 +94,17 @@ export function saveBudgetSettings(value: BudgetSettings, storage: StorageLike =
 }
 
 export function loadCategorySettings(storage: StorageLike = localStorage) {
-  return loadSafe(storage, CATEGORY_SETTINGS_KEY, createDefaultCategorySettings(), isCategorySettings);
+  const result = loadSafe(
+    storage,
+    CATEGORY_SETTINGS_KEY,
+    createDefaultCategorySettings(),
+    isCategorySettings
+  );
+  const value = ensureSystemCategories(result.value);
+  if (value !== result.value) {
+    storage.setItem(CATEGORY_SETTINGS_KEY, JSON.stringify(value));
+  }
+  return { ...result, value };
 }
 
 export function saveCategorySettings(value: CategorySettings, storage: StorageLike = localStorage) {

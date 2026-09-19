@@ -9,6 +9,7 @@ export const SYSTEM_EXPENSE_CATEGORIES = [
   { id: "system-entertainment", name: "娛樂" },
   { id: "system-health", name: "醫療" },
   { id: "system-education", name: "教育" },
+  { id: "system-salary", name: "薪水" },
   { id: "system-other", name: "其他" },
 ] as const;
 
@@ -29,6 +30,38 @@ export function createDefaultCategorySettings(): CategorySettings {
 
 export function normalizeCategoryName(name: string) {
   return name.trim().replace(/\s+/g, " ");
+}
+
+export function ensureSystemCategories(
+  settings: CategorySettings
+): CategorySettings {
+  const ids = new Set(settings.categories.map((category) => category.id));
+  const names = new Set(
+    settings.categories.map((category) =>
+      category.name.trim().toLocaleLowerCase("zh-TW")
+    )
+  );
+  const missing = SYSTEM_EXPENSE_CATEGORIES.filter(
+    (category) =>
+      !ids.has(category.id) &&
+      !names.has(category.name.toLocaleLowerCase("zh-TW"))
+  );
+
+  if (missing.length === 0) return settings;
+  return {
+    ...settings,
+    categories: [
+      ...settings.categories,
+      ...missing.map(
+        (category): ExpenseCategory => ({
+          ...category,
+          isSystem: true,
+          disabled: false,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        })
+      ),
+    ],
+  };
 }
 
 export function hasCategoryName(
@@ -114,6 +147,7 @@ export function getCategoryIcon(category: string) {
     娛樂: "🎮",
     醫療: "🩺",
     教育: "📚",
+    薪水: "💰",
     其他: "🧾",
   };
   return icons[category] ?? "🏷️";

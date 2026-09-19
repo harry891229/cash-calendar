@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { parsePositiveNtd } from "@/lib/money";
 import {
   buildMonthlyEvents,
+  calculateCategorySpending,
   calculateMonthSummary,
   getEventsForDate,
 } from "@/lib/recurrence";
@@ -177,6 +178,47 @@ describe("recurrence", () => {
 
     expect(calendarEvents).toEqual(summary.events);
     expect(summary.balance).toBe(700);
+  });
+
+  it("groups fixed and single expenses by category without counting income", () => {
+    const records = [
+      record({ id: "fixed-food", amount: 300, category: "餐飲" }),
+      record({
+        id: "single-food",
+        amount: 120,
+        category: "餐飲",
+        frequency: "once",
+        date: "2026-04-12",
+      }),
+      record({ id: "transport", amount: 80, category: "交通" }),
+      record({
+        id: "income",
+        amount: 2000,
+        category: "餐飲",
+        recordType: "income",
+      }),
+    ];
+
+    const spending = calculateCategorySpending(records, new Date(2026, 3, 1));
+
+    expect(spending.map(({ category, total }) => ({ category, total }))).toEqual([
+      { category: "餐飲", total: 420 },
+      { category: "交通", total: 80 },
+    ]);
+    expect(spending[0].events.map((event) => event.recordId)).toEqual([
+      "fixed-food",
+      "single-food",
+    ]);
+  });
+
+  it("keeps disabled or historical category names visible in monthly spending", () => {
+    const spending = calculateCategorySpending(
+      [record({ category: "已停用分類", amount: 450 })],
+      new Date(2026, 0, 1)
+    );
+
+    expect(spending[0].category).toBe("已停用分類");
+    expect(spending[0].total).toBe(450);
   });
 });
 

@@ -132,6 +132,34 @@ export function calculateMonthSummary(records: CashRecord[], baseDate: Date) {
   };
 }
 
+export function calculateCategorySpending(
+  records: CashRecord[],
+  baseDate: Date
+) {
+  const expenseEvents = buildMonthlyEvents(records, baseDate).filter(
+    (event) => event.recordType === "expense"
+  );
+  const categoryEvents = new Map<string, CashEvent[]>();
+
+  for (const event of expenseEvents) {
+    const category = event.category.trim() || "未分類";
+    const events = categoryEvents.get(category) ?? [];
+    events.push(event);
+    categoryEvents.set(category, events);
+  }
+
+  return [...categoryEvents.entries()]
+    .map(([category, events]) => ({
+      category,
+      total: sumAmounts(events),
+      events,
+    }))
+    .sort(
+      (a, b) =>
+        b.total - a.total || a.category.localeCompare(b.category, "zh-TW")
+    );
+}
+
 export function getFrequencyText(frequency: Frequency) {
   if (frequency === "once") return "單次";
   if (frequency === "monthly") return "每月固定";

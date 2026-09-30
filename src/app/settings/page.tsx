@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import BottomNav from "@/components/BottomNav";
 import PwaInstallGuide from "@/components/PwaInstallGuide";
 import { APP_INFO } from "@/lib/app-info";
@@ -301,6 +302,7 @@ export default function SettingsPage() {
               <div className="flex items-center justify-between gap-3">
                 <div><p className="font-bold">{record.title}</p><p className="text-xs text-slate-400">{record.category}・{formatMoney(record.amount)}・{record.effectiveTo === null ? "生效中" : `已於 ${record.effectiveTo} 停止`}</p></div>
                 <div className="flex shrink-0 gap-3">
+                  {record.effectiveTo === null ? <Link href={`/add?editId=${record.id}`} className="text-sm font-bold text-sky-300">編輯</Link> : null}
                   {record.effectiveTo === null ? <button type="button" onClick={() => stopRecurring(record)} className="text-sm font-bold text-amber-300">停止</button> : null}
                   <button type="button" onClick={() => openPermanentDelete(record)} className="text-sm font-bold text-red-300">永久刪除</button>
                 </div>

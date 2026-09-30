@@ -49,6 +49,7 @@ describe("settings collapsible sections", () => {
     expect(source).toContain("toggleCategory");
     expect(source).toContain("stopRecurring");
     expect(source).toContain("openPermanentDelete");
+    expect(source).toContain('href={`/add?editId=${record.id}`}');
     expect(source).toContain("aria-expanded={isExpanded}");
   });
 });

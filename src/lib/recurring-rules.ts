@@ -1,4 +1,4 @@
-import { toDateText } from "@/lib/date";
+import { getWeekdayText, nextDateText, toDateText } from "@/lib/date";
 import type { CashRecord } from "@/types/cash-record";
 
 export function stopRecurringRule(
@@ -15,6 +15,28 @@ export function stopRecurringRule(
   return records.map((record) =>
     record.id === recordId ? { ...record, effectiveTo } : record
   );
+}
+
+export function getRecurringEditEffectiveFrom(
+  record: CashRecord,
+  today: Date
+) {
+  if (record.frequency === "once") return record.date;
+  const dayAfterOriginalStart = nextDateText(record.effectiveFrom);
+  if (!dayAfterOriginalStart) {
+    throw new Error("固定規則的生效日期不合法");
+  }
+  const todayText = toDateText(today);
+  return todayText > record.effectiveFrom ? todayText : dayAfterOriginalStart;
+}
+
+export function getNewRecurringDefaults(today: Date) {
+  return {
+    effectiveFrom: toDateText(today),
+    dayOfMonth: String(today.getDate()),
+    dayOfWeek: getWeekdayText(today),
+    monthOfYear: String(today.getMonth() + 1),
+  };
 }
 
 export function permanentlyDeleteRecurringVersion(

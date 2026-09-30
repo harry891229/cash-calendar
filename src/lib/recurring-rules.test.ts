@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { buildMonthlyEvents } from "@/lib/recurrence";
 import {
+  getRecurringEditEffectiveFrom,
+  getNewRecurringDefaults,
   permanentlyDeleteRecurringVersion,
   stopRecurringRule,
 } from "@/lib/recurring-rules";
@@ -26,6 +28,33 @@ function recurring(overrides: Partial<CashRecord> = {}): CashRecord {
 }
 
 describe("recurring rule management", () => {
+  it("defaults a new recurring rule to today's date and weekday", () => {
+    expect(getNewRecurringDefaults(new Date(2026, 8, 30))).toEqual({
+      effectiveFrom: "2026-09-30",
+      dayOfMonth: "30",
+      dayOfWeek: "星期三",
+      monthOfYear: "9",
+    });
+  });
+
+  it("uses tomorrow when a recurring rule starts today", () => {
+    expect(
+      getRecurringEditEffectiveFrom(
+        recurring({ effectiveFrom: "2026-09-30" }),
+        new Date(2026, 8, 30)
+      )
+    ).toBe("2026-10-01");
+  });
+
+  it("uses today when editing an older recurring rule", () => {
+    expect(
+      getRecurringEditEffectiveFrom(
+        recurring({ effectiveFrom: "2026-01-01" }),
+        new Date(2026, 8, 30)
+      )
+    ).toBe("2026-09-30");
+  });
+
   it("stops a rule while preserving history", () => {
     const stopped = stopRecurringRule([recurring()], "salary-rule", new Date(2026, 4, 15));
     expect(stopped[0].effectiveTo).toBe("2026-05-15");

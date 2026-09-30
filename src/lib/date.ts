@@ -77,3 +77,10 @@ export function previousDateText(dateText: string) {
   date.setDate(date.getDate() - 1);
   return toDateText(date);
 }
+
+export function nextDateText(dateText: string) {
+  const date = parseDateText(dateText);
+  if (!date) return null;
+  date.setDate(date.getDate() + 1);
+  return toDateText(date);
+}

@@ -7,6 +7,10 @@ import { getActiveCategories } from "@/lib/categories";
 import { isDateText, previousDateText, toDateText } from "@/lib/date";
 import { saveFlashMessage } from "@/lib/flash-message";
 import { parsePositiveNtd } from "@/lib/money";
+import {
+  getNewRecurringDefaults,
+  getRecurringEditEffectiveFrom,
+} from "@/lib/recurring-rules";
 import { loadCategorySettings, saveCategorySettings } from "@/lib/settings-storage";
 import { loadCashRecords, saveCashRecords } from "@/lib/storage";
 import { createSubmissionGuard } from "@/lib/submission-guard";
@@ -29,16 +33,19 @@ function AddPageContent() {
   const searchParams = useSearchParams();
   const guardRef = useRef(createSubmissionGuard());
   const editId = searchParams.get("editId");
+  const recurringDefaults = getNewRecurringDefaults(new Date());
 
   const [title, setTitle] = useState("");
   const [amount, setAmount] = useState("");
   const [recordType, setRecordType] = useState<RecordType>("expense");
   const [frequency, setFrequency] = useState<Frequency>("once");
   const [date, setDate] = useState(todayText());
-  const [effectiveFrom, setEffectiveFrom] = useState(todayText());
-  const [dayOfMonth, setDayOfMonth] = useState("1");
-  const [dayOfWeek, setDayOfWeek] = useState<(typeof WEEKDAYS)[number]>(WEEKDAYS[1]);
-  const [monthOfYear, setMonthOfYear] = useState(String(new Date().getMonth() + 1));
+  const [effectiveFrom, setEffectiveFrom] = useState(recurringDefaults.effectiveFrom);
+  const [dayOfMonth, setDayOfMonth] = useState(recurringDefaults.dayOfMonth);
+  const [dayOfWeek, setDayOfWeek] = useState<(typeof WEEKDAYS)[number]>(
+    recurringDefaults.dayOfWeek as (typeof WEEKDAYS)[number]
+  );
+  const [monthOfYear, setMonthOfYear] = useState(recurringDefaults.monthOfYear);
   const [category, setCategory] = useState("其他");
   const [categorySettings, setCategorySettings] = useState<CategorySettings | null>(null);
   const [originalRecord, setOriginalRecord] = useState<CashRecord | null>(null);
@@ -65,7 +72,7 @@ function AddPageContent() {
         setRecordType(target.recordType);
         setFrequency(target.frequency);
         setDate(target.date);
-        setEffectiveFrom(target.frequency === "once" ? target.date : todayText());
+        setEffectiveFrom(getRecurringEditEffectiveFrom(target, new Date()));
         setDayOfMonth(target.dayOfMonth);
         setDayOfWeek(target.dayOfWeek as (typeof WEEKDAYS)[number]);
         setMonthOfYear(target.monthOfYear);

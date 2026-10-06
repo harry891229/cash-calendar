@@ -1,5 +1,7 @@
 import { isDateText } from "@/lib/date";
 import { isPositiveNtd } from "@/lib/money";
+import { cashRecordFingerprint } from "@/lib/record-duplicates";
+import { findRecurringDuplicateCandidates } from "@/lib/recurring-rules";
 import { createDefaultCategorySettings } from "@/lib/categories";
 import {
   backupCurrentSettings,
@@ -175,9 +177,64 @@ function quarantineValues(values: unknown[], reasonPrefix = "") {
 }
 
 function saveBackup(storage: StorageLike, raw: string) {
-  const backupKey = `${CASH_RECORDS_BACKUP_PREFIX}:${new Date().toISOString()}`;
+  const baseKey = `${CASH_RECORDS_BACKUP_PREFIX}:${new Date().toISOString()}`;
+  let backupKey = baseKey;
+  let suffix = 1;
+  while (storage.getItem(backupKey) !== null) {
+    backupKey = `${baseKey}:${suffix++}`;
+  }
   storage.setItem(backupKey, raw);
   return backupKey;
+}
+
+function inspectRecordValues(values: unknown[], legacy: boolean) {
+  const records: CashRecord[] = [];
+  const quarantined: QuarantinedRecord[] = [];
+  const fingerprints = new Set<string>();
+  const usedIds = new Set<string>();
+  // Reserve IDs from the entire input, including later rows. Recovery must not
+  // claim an ID that already belongs to an independent record in this import.
+  const reservedIds = new Set(values.flatMap((value) =>
+    isPlainObject(value) && typeof value.id === "string" ? [value.id] : []
+  ));
+  const now = new Date().toISOString();
+
+  for (const value of values) {
+    const result = validateRecord(value, legacy);
+    if (!result.record) {
+      quarantined.push({ reason: result.reason ?? "未知資料錯誤", value, quarantinedAt: now });
+      continue;
+    }
+    const fingerprint = cashRecordFingerprint(result.record);
+    if (fingerprints.has(fingerprint)) {
+      quarantined.push({
+        reason: "完全相同的重複紀錄（相同 ID），已保留第一筆並隔離副本",
+        value,
+        quarantinedAt: now,
+      });
+      continue;
+    }
+    // Compare original fingerprints before remapping, so a repeated copy of an
+    // ID collision is still isolated rather than receiving yet another new ID.
+    fingerprints.add(fingerprint);
+    let record = result.record;
+    if (usedIds.has(record.id)) {
+      let suffix = 1;
+      let recoveredId = `${record.id}~recovered-${suffix}`;
+      while (reservedIds.has(recoveredId) || usedIds.has(recoveredId)) {
+        recoveredId = `${record.id}~recovered-${++suffix}`;
+      }
+      quarantined.push({
+        reason: `紀錄 ID 衝突（原 ID ${record.id}；已改配唯一 ID ${recoveredId}，全部記帳內容已保留；此處保存原始衝突資料）`,
+        value,
+        quarantinedAt: now,
+      });
+      record = { ...record, id: recoveredId };
+    }
+    usedIds.add(record.id);
+    records.push(record);
+  }
+  return { records, quarantined };
 }
 
 function saveQuarantine(
@@ -242,22 +299,7 @@ export function previewCashRecordsImport(
   const values: unknown[] = isLegacy
     ? (parsed as unknown[])
     : ((parsed as Record<string, unknown>).records as unknown[]);
-  const records: CashRecord[] = [];
-  const quarantined: QuarantinedRecord[] = [];
-  const now = new Date().toISOString();
-
-  for (const value of values) {
-    const result = validateRecord(value, isLegacy);
-    if (result.record) {
-      records.push(result.record);
-    } else {
-      quarantined.push({
-        reason: result.reason ?? "未知資料錯誤",
-        value,
-        quarantinedAt: now,
-      });
-    }
-  }
+  const { records, quarantined } = inspectRecordValues(values, isLegacy);
 
   const metadata = isV2 ? (parsed as Record<string, unknown>) : null;
   const rawBudgetSettings = metadata?.budgetSettings;
@@ -313,11 +355,16 @@ export function saveCashRecords(
   records: CashRecord[],
   storage: StorageLike = localStorage
 ) {
+  const ids = new Set<string>();
   for (const record of records) {
     const validation = validateRecord(record, false);
     if (!validation.record) {
       throw new Error(`拒絕寫入不合法記帳資料：${validation.reason}`);
     }
+    if (ids.has(record.id)) {
+      throw new Error(`拒絕寫入重複的記帳 ID：${record.id}`);
+    }
+    ids.add(record.id);
   }
 
   const envelope: CashRecordsEnvelope = {
@@ -380,21 +427,7 @@ export function loadCashRecords(
   const values: unknown[] = isLegacy
     ? (parsed as unknown[])
     : ((parsed as Record<string, unknown>).records as unknown[]);
-  const records: CashRecord[] = [];
-  const quarantined: QuarantinedRecord[] = [];
-
-  for (const value of values) {
-    const result = validateRecord(value, isLegacy);
-    if (result.record) {
-      records.push(result.record);
-    } else {
-      quarantined.push({
-        reason: result.reason ?? "未知資料錯誤",
-        value,
-        quarantinedAt: new Date().toISOString(),
-      });
-    }
-  }
+  const { records, quarantined } = inspectRecordValues(values, isLegacy);
 
   const needsRewrite = isLegacy || quarantined.length > 0;
   let backupKey: string | null = null;
@@ -411,4 +444,82 @@ export function loadCashRecords(
     migrated: needsRewrite,
     backupKey,
   };
+}
+
+export type RecurringDuplicateResolution = {
+  records: CashRecord[];
+  backupKey: string | null;
+  quarantined: QuarantinedRecord[];
+};
+
+export function resolveRecurringDuplicate(
+  duplicateId: string,
+  keepId: string,
+  confirmed: boolean,
+  storage: StorageLike = localStorage
+): RecurringDuplicateResolution {
+  const { records } = loadCashRecords(storage);
+  if (!confirmed) return { records, backupKey: null, quarantined: [] };
+  const duplicate = records.find((record) => record.id === duplicateId);
+  const candidates = findRecurringDuplicateCandidates(records);
+  const candidate = candidates.find(({ original, duplicate: other }) =>
+    (original.id === keepId && other.id === duplicateId) ||
+    (original.id === duplicateId && other.id === keepId)
+  );
+  if (!duplicate || !candidate || duplicateId === keepId) {
+    throw new Error("這兩筆固定規則已不符合重複候選，請重新檢查");
+  }
+  if (
+    records.filter((record) => record.id === duplicateId).length !== 1 ||
+    records.filter((record) => record.id === keepId).length !== 1
+  ) {
+    throw new Error("規則 ID 不唯一，無法安全隔離，請先下載備份檢查");
+  }
+
+  const raw = storage.getItem(CASH_RECORDS_KEY);
+  const backupKey = raw === null ? null : saveBackup(storage, raw);
+  const quarantined: QuarantinedRecord[] = [{
+    reason: `疑似重複固定規則（使用者確認隔離；保留 ${keepId}）`,
+    value: duplicate,
+    quarantinedAt: new Date().toISOString(),
+  }];
+  const nextRecords = records.filter((record) => record.id !== duplicateId);
+  saveQuarantine(storage, quarantined);
+  saveCashRecords(nextRecords, storage);
+  return { records: nextRecords, backupKey, quarantined };
+}
+
+export function restoreResolvedRecurringDuplicate(
+  isolated: QuarantinedRecord,
+  confirmed: boolean,
+  storage: StorageLike = localStorage
+) {
+  const { records } = loadCashRecords(storage);
+  if (!confirmed) return { records, backupKey: null };
+  const quarantine = getQuarantinedRecords(storage);
+  const isolatedIndex = quarantine.findIndex((entry) =>
+    entry.reason === isolated.reason &&
+    entry.quarantinedAt === isolated.quarantinedAt &&
+    JSON.stringify(entry.value) === JSON.stringify(isolated.value)
+  );
+  if (isolatedIndex === -1 || !isolated.reason.startsWith("疑似重複固定規則（使用者確認隔離；")) {
+    throw new Error("找不到可復原的固定規則隔離資料");
+  }
+  const validation = validateRecord(isolated.value, false);
+  const record = validation.record;
+  if (!record || record.frequency === "once") {
+    throw new Error("隔離規則格式不合法，請使用原始備份檢查");
+  }
+  if (records.some((existing) => existing.id === record.id)) {
+    throw new Error("此規則 ID 已存在，無法重複復原");
+  }
+
+  const raw = storage.getItem(CASH_RECORDS_KEY);
+  const backupKey = raw === null ? null : saveBackup(storage, raw);
+  const nextRecords = [record, ...records];
+  saveCashRecords(nextRecords, storage);
+  storage.setItem(CASH_RECORDS_QUARANTINE_KEY, JSON.stringify(
+    quarantine.filter((_, index) => index !== isolatedIndex)
+  ));
+  return { records: nextRecords, backupKey };
 }

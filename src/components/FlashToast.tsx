@@ -2,29 +2,22 @@
 
 import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
-import { consumeFlashMessage } from "@/lib/flash-message";
+import { startFlashToast } from "@/lib/flash-message";
+
+type VisibleToast = { message: string; pathname: string };
 
 export default function FlashToast() {
-  const [message, setMessage] = useState("");
+  const [toast, setToast] = useState<VisibleToast | null>(null);
   const pathname = usePathname();
 
   useEffect(() => {
-    const savedMessage = consumeFlashMessage();
-    if (!savedMessage) return;
-
-    let hideTimer: number | undefined;
-    const showTimer = window.setTimeout(() => {
-      setMessage(savedMessage);
-      hideTimer = window.setTimeout(() => setMessage(""), 2500);
-    }, 0);
-
-    return () => {
-      window.clearTimeout(showTimer);
-      if (hideTimer !== undefined) window.clearTimeout(hideTimer);
-    };
+    return startFlashToast((message) => {
+      setToast(message ? { message, pathname } : null);
+    });
   }, [pathname]);
 
-  if (!message) return null;
+  // Hide the previous page's message immediately, before effect cleanup runs.
+  if (!toast || toast.pathname !== pathname) return null;
 
   return (
     <div
@@ -32,7 +25,7 @@ export default function FlashToast() {
       aria-live="polite"
       className="pointer-events-none fixed left-1/2 top-5 z-[9999] w-max max-w-[calc(100vw-2rem)] -translate-x-1/2 rounded-2xl bg-emerald-400 px-5 py-3 text-center text-sm font-bold text-slate-950 shadow-2xl"
     >
-      {message}
+      {toast.message}
     </div>
   );
 }

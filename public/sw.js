@@ -1,4 +1,4 @@
-const CACHE_VERSION = "cash-calendar-v5.0.0";
+const CACHE_VERSION = "cash-calendar-v6.0.0";
 const PAGE_CACHE = `${CACHE_VERSION}-pages`;
 const ASSET_CACHE = `${CACHE_VERSION}-assets`;
 const OFFLINE_ROUTES = ["/", "/add", "/calendar", "/settings", "/offline"];

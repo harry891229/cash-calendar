@@ -4,12 +4,14 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import BottomNav from "@/components/BottomNav";
 import { getActiveCategories } from "@/lib/categories";
-import { isDateText, previousDateText, toDateText } from "@/lib/date";
+import { isDateText, toDateText } from "@/lib/date";
 import { saveFlashMessage } from "@/lib/flash-message";
 import { parsePositiveNtd } from "@/lib/money";
+import { commitRecordSave } from "@/lib/record-save-completion";
 import {
   getNewRecurringDefaults,
   getRecurringEditEffectiveFrom,
+  replaceRecurringRuleVersion,
 } from "@/lib/recurring-rules";
 import { loadCategorySettings, saveCategorySettings } from "@/lib/settings-storage";
 import { loadCashRecords, saveCashRecords } from "@/lib/storage";
@@ -50,6 +52,7 @@ function AddPageContent() {
   const [categorySettings, setCategorySettings] = useState<CategorySettings | null>(null);
   const [originalRecord, setOriginalRecord] = useState<CashRecord | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [isCommitted, setIsCommitted] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -102,7 +105,8 @@ function AddPageContent() {
     if ((frequency === "monthly" || frequency === "yearly") && (!Number.isInteger(day) || day < 1 || day > 31)) return "日期必須介於 1 到 31。";
     const month = Number(monthOfYear);
     if (frequency === "yearly" && (!Number.isInteger(month) || month < 1 || month > 12)) return "月份必須介於 1 到 12。";
-    if (originalRecord?.frequency !== "once" && originalRecord && effectiveFrom <= originalRecord.effectiveFrom) return `新規則生效日必須晚於 ${originalRecord.effectiveFrom}。`;
+    const replacementStart = frequency === "once" ? date : effectiveFrom;
+    if (originalRecord?.frequency !== "once" && originalRecord && replacementStart <= originalRecord.effectiveFrom) return `新規則生效日必須晚於 ${originalRecord.effectiveFrom}。`;
     return null;
   }
 
@@ -113,6 +117,20 @@ function AddPageContent() {
     const next = { ...categorySettings, lastUsedExpenseCategoryId: selected.id };
     saveCategorySettings(next);
     setCategorySettings(next);
+  }
+
+  function finishSuccessfulSave(nextRecords: CashRecord[], successMessage: string) {
+    const result = commitRecordSave({
+      saveRecords: () => saveCashRecords(nextRecords),
+      rememberCategory,
+      showSuccess: () => saveFlashMessage(successMessage),
+      navigate: () => router.push("/"),
+    });
+    setIsCommitted(true);
+    if (!result.navigated) {
+      setIsSaving(false);
+      setError("資料已儲存，請返回首頁查看。");
+    }
   }
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
@@ -151,9 +169,6 @@ function AddPageContent() {
             effectiveTo: null,
           } : record);
         } else {
-          const oldEffectiveTo = previousDateText(effectiveFrom);
-          if (!oldEffectiveTo) throw new Error("無法建立歷史結束日期");
-          const closed = records.map((record) => record.id === editId ? { ...record, effectiveTo: oldEffectiveTo } : record);
           const replacement: CashRecord = {
             ...originalRecord,
             id: crypto.randomUUID(),
@@ -170,12 +185,9 @@ function AddPageContent() {
             effectiveTo: null,
             createdAt: new Date().toISOString(),
           };
-          nextRecords = [replacement, ...closed];
+          nextRecords = replaceRecurringRuleVersion(records, editId, replacement, originalRecord);
         }
-        saveCashRecords(nextRecords);
-        rememberCategory();
-        saveFlashMessage("修改成功");
-        router.push("/");
+        finishSuccessfulSave(nextRecords, "修改成功");
         return;
       }
 
@@ -194,10 +206,7 @@ function AddPageContent() {
         effectiveFrom: frequency === "once" ? date : effectiveFrom,
         effectiveTo: null,
       };
-      saveCashRecords([newRecord, ...records]);
-      rememberCategory();
-      saveFlashMessage("新增成功");
-      router.push("/");
+      finishSuccessfulSave([newRecord, ...records], "新增成功");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "儲存失敗");
       setIsSaving(false);
@@ -255,7 +264,7 @@ function AddPageContent() {
             {frequency === "yearly" ? <label className="mt-3 block"><span className="mb-1 block text-sm text-slate-300">月份（1～12）</span><input value={monthOfYear} onChange={(event) => setMonthOfYear(event.target.value)} inputMode="numeric" className={inputClass} /></label> : null}
           </details>
 
-          <button type="submit" disabled={isSaving} className="sticky bottom-20 z-20 w-full rounded-3xl bg-sky-400 px-4 py-4 text-lg font-black text-slate-950 shadow-2xl disabled:cursor-not-allowed disabled:opacity-60">{isSaving ? "儲存中…" : originalRecord ? "儲存修改" : "儲存記帳"}</button>
+          <button type="submit" disabled={isSaving || isCommitted} className="sticky bottom-20 z-20 w-full rounded-3xl bg-sky-400 px-4 py-4 text-lg font-black text-slate-950 shadow-2xl disabled:cursor-not-allowed disabled:opacity-60">{isCommitted ? "已儲存" : isSaving ? "儲存中…" : originalRecord ? "儲存修改" : "儲存記帳"}</button>
         </form>
         <BottomNav />
       </div>

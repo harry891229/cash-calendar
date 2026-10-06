@@ -7,6 +7,7 @@ import {
   toDateText,
 } from "@/lib/date";
 import { sumAmounts } from "@/lib/money";
+import { deduplicateIdenticalCashRecords } from "@/lib/record-duplicates";
 import type {
   CashEvent,
   CashRecord,
@@ -50,7 +51,7 @@ export function buildMonthlyEvents(records: CashRecord[], baseDate: Date) {
   const lastDay = getDaysInMonth(year, month);
   const events: CashEvent[] = [];
 
-  for (const record of records) {
+  for (const record of deduplicateIdenticalCashRecords(records).records) {
     if (record.frequency === "once") {
       if (!isSameMonth(record.date, baseDate)) continue;
       const date = parseDateText(record.date);

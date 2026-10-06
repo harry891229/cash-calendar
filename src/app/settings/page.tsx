@@ -13,12 +13,14 @@ import {
 import { createCashCalendarBackup, getBackupFilename } from "@/lib/backup";
 import { formatMoney, parsePositiveNtd } from "@/lib/money";
 import {
+  findRecurringDuplicateCandidates,
   permanentlyDeleteRecurringVersion,
   stopRecurringRule,
 } from "@/lib/recurring-rules";
 import {
-  createDefaultSettingsSectionState,
-  toggleSettingsSection,
+  getSettingsSectionTitle,
+  SETTINGS_DIRECTORY,
+  type SettingsSectionId,
 } from "@/lib/settings-sections";
 import {
   loadBudgetSettings,
@@ -32,14 +34,17 @@ import {
   loadCashRecords,
   previewCashRecordsImport,
   restoreCashRecordsFromText,
+  resolveRecurringDuplicate,
+  restoreResolvedRecurringDuplicate,
   saveCashRecords,
   type CashRecordsImportPreview,
 } from "@/lib/storage";
-import type { CashRecord } from "@/types/cash-record";
+import type { CashRecord, QuarantinedRecord } from "@/types/cash-record";
 import type { BudgetSettings, CategorySettings } from "@/types/settings";
 
 export default function SettingsPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const successTimerRef = useRef<number | null>(null);
   const [records, setRecords] = useState<CashRecord[]>([]);
   const [budget, setBudget] = useState<BudgetSettings>({ version: 1, monthlyBudget: null });
   const [budgetInput, setBudgetInput] = useState("");
@@ -47,16 +52,15 @@ export default function SettingsPage() {
   const [newCategory, setNewCategory] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
-  const [quarantineCount, setQuarantineCount] = useState(0);
+  const [quarantinedRecords, setQuarantinedRecords] = useState<QuarantinedRecord[]>([]);
+  const quarantineCount = quarantinedRecords.length;
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [importRaw, setImportRaw] = useState("");
   const [importPreview, setImportPreview] = useState<CashRecordsImportPreview | null>(null);
   const [importFileName, setImportFileName] = useState("");
   const [deleteCandidate, setDeleteCandidate] = useState<CashRecord | null>(null);
-  const [expandedSections, setExpandedSections] = useState(
-    createDefaultSettingsSectionState
-  );
+  const [activeSection, setActiveSection] = useState<SettingsSectionId | null>(null);
 
   function refresh() {
     const loadedRecords = loadCashRecords().records;
@@ -66,18 +70,29 @@ export default function SettingsPage() {
     setBudget(loadedBudget);
     setBudgetInput(loadedBudget.monthlyBudget === null ? "" : String(loadedBudget.monthlyBudget));
     setCategories(loadedCategories);
-    setQuarantineCount(getQuarantinedRecords().length);
+    setQuarantinedRecords(getQuarantinedRecords());
   }
 
   useEffect(() => {
     const timer = window.setTimeout(refresh, 0);
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      if (successTimerRef.current !== null) {
+        window.clearTimeout(successTimerRef.current);
+      }
+    };
   }, []);
 
   function showSuccess(value: string) {
     setError("");
     setMessage(value);
-    window.setTimeout(() => setMessage(""), 3000);
+    if (successTimerRef.current !== null) {
+      window.clearTimeout(successTimerRef.current);
+    }
+    successTimerRef.current = window.setTimeout(() => {
+      setMessage("");
+      successTimerRef.current = null;
+    }, 3000);
   }
 
   function saveBudget() {
@@ -217,45 +232,137 @@ export default function SettingsPage() {
     showSuccess("全部記帳資料已清除");
   }
 
+  function openSettingsSection(section: SettingsSectionId | null) {
+    setActiveSection(section);
+    setMessage("");
+    if (successTimerRef.current !== null) {
+      window.clearTimeout(successTimerRef.current);
+      successTimerRef.current = null;
+    }
+    setError("");
+    setEditingId(null);
+    setDeleteCandidate(null);
+    window.scrollTo({ top: 0 });
+  }
+
+  function resolveDuplicate(duplicate: CashRecord, keep: CashRecord) {
+    const describe = (record: CashRecord) =>
+      record.title + "・" + formatMoney(record.amount) + "・" + record.category +
+      "・" + record.effectiveFrom + " 至 " + (record.effectiveTo ?? "持續生效") +
+      "・ID " + record.id;
+    if (!confirm(
+      "保留：" + describe(keep) + "\n隔離：" + describe(duplicate) +
+      "\n\n隔離會移除選取版本的所有過去與未來顯示。系統會先備份整份原始記帳資料，並保留被隔離的原始紀錄。確定繼續？"
+    )) return;
+    try {
+      const result = resolveRecurringDuplicate(duplicate.id, keep.id, true);
+      setRecords(result.records);
+      setQuarantinedRecords(getQuarantinedRecords());
+      showSuccess("疑似重複版本已隔離，原始資料與備份已保留");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "無法處理疑似重複規則");
+      refresh();
+    }
+  }
+
+  function restoreIsolatedDuplicate(isolated: QuarantinedRecord) {
+    if (!confirm(
+      "確定復原「" + getIsolatedRecordTitle(isolated) +
+      "」？這會將該固定規則加回目前資料，可能再次顯示重複收支；之後新增的記帳會保留。"
+    )) return;
+    try {
+      const result = restoreResolvedRecurringDuplicate(isolated, true);
+      setRecords(result.records);
+      setQuarantinedRecords(getQuarantinedRecords());
+      showSuccess("固定規則已復原");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "無法復原隔離規則");
+      refresh();
+    }
+  }
+  function downloadQuarantinedData() {
+    const quarantined = getQuarantinedRecords();
+    const blob = new Blob([JSON.stringify(quarantined, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = getBackupFilename().replace(".json", "-quarantine.json");
+    anchor.click();
+    URL.revokeObjectURL(url);
+    showSuccess("隔離原始資料已下載");
+  }
   const recurring = records.filter((record) => record.frequency !== "once");
   const activeRecurringCount = recurring.filter(
     (record) => record.effectiveTo === null
   ).length;
   const stoppedRecurringCount = recurring.length - activeRecurringCount;
 
+  const duplicateCandidates = findRecurringDuplicateCandidates(records);
+  const isolatedDuplicates = quarantinedRecords.filter((entry) =>
+    entry.reason.startsWith("疑似重複固定規則（使用者確認隔離；")
+  );
+  const directorySummaries: Record<SettingsSectionId, string> = {
+    budget: budget.monthlyBudget === null ? "尚未設定" : formatMoney(budget.monthlyBudget),
+    categories: String(categories?.categories.length ?? 0) + " 個分類",
+    recurring: "有效 " + activeRecurringCount + " 個・已停止 " + stoppedRecurringCount + " 個",
+    backup: "JSON 匯出與匯入",
+    data: records.length + " 筆規則・隔離 " + quarantineCount + " 筆",
+    about: APP_INFO.version,
+  };
   return (
     <main className="min-h-screen bg-slate-950 text-white">
       <div className="mx-auto min-h-screen max-w-md px-5 pb-28 pt-6">
         <header className="mb-6">
-          <p className="text-sm text-slate-400">偏好設定與資料管理</p>
-          <h1 className="mt-1 text-3xl font-black">設定</h1>
+          {activeSection === null ? (
+            <p className="text-sm text-slate-400">偏好設定與資料管理</p>
+          ) : (
+            <button type="button" onClick={() => openSettingsSection(null)} className="mb-3 flex min-h-10 items-center gap-2 text-sm font-bold text-sky-300">
+              <span aria-hidden="true">‹</span> 返回設定
+            </button>
+          )}
+          <h1 className="mt-1 text-3xl font-black">{getSettingsSectionTitle(activeSection)}</h1>
         </header>
 
-        {message ? <p role="status" className="mb-4 rounded-2xl bg-emerald-400/15 px-4 py-3 text-sm font-bold text-emerald-200 ring-1 ring-emerald-400/30">{message}</p> : null}
+        {message ? <p role="status" aria-atomic="true" className="fixed left-1/2 top-5 z-[100] w-[calc(100%-40px)] max-w-md -translate-x-1/2 rounded-2xl bg-emerald-950/95 px-4 py-3 text-sm font-bold text-emerald-200 shadow-xl ring-1 ring-emerald-400/30">{message}</p> : null}
         {error ? <p role="alert" className="mb-4 rounded-2xl bg-red-500/10 px-4 py-3 text-sm font-bold text-red-200 ring-1 ring-red-400/30">{error}</p> : null}
 
-        <Section title="1. 每月預算" description="設定每月可支配的支出上限，不影響原本收入減支出的剩餘金額。">
-          <p className="mb-3 text-sm text-slate-300">目前預算：{budget.monthlyBudget === null ? "尚未設定" : formatMoney(budget.monthlyBudget)}</p>
+        {activeSection === null ? (
+          <div className="space-y-6">
+            {SETTINGS_DIRECTORY.map((group) => (
+              <section key={group.id} aria-labelledby={"settings-group-" + group.id}>
+                <h2 id={"settings-group-" + group.id} className="mb-2 px-1 text-sm font-bold text-slate-400">{group.title}</h2>
+                <div className="divide-y divide-white/10 overflow-hidden rounded-2xl bg-white/5 ring-1 ring-white/10">
+                  {group.entries.map((entry) => (
+                    <button key={entry.id} type="button" onClick={() => openSettingsSection(entry.id)} className="flex min-h-16 w-full items-center justify-between gap-3 px-4 py-3 text-left">
+                      <span className="font-bold">{entry.title}</span>
+                      <span className="flex min-w-0 items-center gap-3 text-sm text-slate-400">
+                        <span className="truncate">{directorySummaries[entry.id]}</span>
+                        <span aria-hidden="true" className="text-xl text-slate-500">›</span>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            ))}
+          </div>
+        ) : null}
+
+        {activeSection === "budget" ? (
+          <Section description="設定每月可支配的支出上限，不影響收入減支出的剩餘金額。">
+            <p className="mb-3 text-sm text-slate-300">目前預算：{budget.monthlyBudget === null ? "尚未設定" : formatMoney(budget.monthlyBudget)}</p>
           <div className="flex gap-2">
             <input value={budgetInput} onChange={(event) => setBudgetInput(event.target.value)} inputMode="numeric" type="text" placeholder="例如 30000" className="h-12 min-w-0 flex-1 rounded-2xl border border-slate-600 bg-slate-950 px-4 outline-none focus:border-sky-300" />
             <button type="button" onClick={saveBudget} className="rounded-2xl bg-sky-400 px-4 font-black text-slate-950">儲存</button>
           </div>
           {budget.monthlyBudget !== null ? <button type="button" onClick={clearBudget} className="mt-3 text-sm font-bold text-slate-400">取消預算設定</button> : null}
-        </Section>
+          </Section>
+        ) : null}
 
-        <CollapsibleSection
-          title="2. 分類管理"
-          description="停用或隱藏只會影響新增選項，歷史紀錄仍保留原分類名稱。"
-          summary={`目前 ${categories?.categories.length ?? 0} 個分類`}
-          isExpanded={expandedSections.categories}
-          onToggle={() =>
-            setExpandedSections((state) =>
-              toggleSettingsSection(state, "categories")
-            )
-          }
-          accessibleName="展開或收合分類管理"
-        >
-          <div className="flex gap-2">
+        {activeSection === "categories" ? (
+          <Section description="停用或隱藏只會影響新增選項，歷史紀錄仍保留原分類名稱。">
+            <div className="flex gap-2">
             <input value={newCategory} onChange={(event) => setNewCategory(event.target.value)} placeholder="新增自訂分類" className="h-12 min-w-0 flex-1 rounded-2xl border border-slate-600 bg-slate-950 px-4 outline-none focus:border-sky-300" />
             <button type="button" onClick={addCategory} className="rounded-2xl bg-white px-4 font-black text-slate-950">新增</button>
           </div>
@@ -283,21 +390,13 @@ export default function SettingsPage() {
               </div>
             ))}
           </div>
-        </CollapsibleSection>
+          </Section>
+        ) : null}
 
-        <CollapsibleSection
-          title="3. 固定規則管理"
-          description="停止會保留歷史；永久刪除會移除選取版本的所有過去與未來顯示。"
-          summary={`有效 ${activeRecurringCount} 個・已停止 ${stoppedRecurringCount} 個`}
-          isExpanded={expandedSections.recurring}
-          onToggle={() =>
-            setExpandedSections((state) =>
-              toggleSettingsSection(state, "recurring")
-            )
-          }
-          accessibleName="展開或收合固定規則管理"
-        >
-          {recurring.length === 0 ? <p className="text-sm text-slate-400">目前沒有生效中的固定規則。</p> : recurring.map((record) => (
+        {activeSection === "recurring" ? (
+          <Section description="停止會保留歷史；永久刪除會移除選取版本的所有過去與未來顯示。">
+            <p className="mb-4 text-sm font-bold text-sky-300">有效 {activeRecurringCount} 個・已停止 {stoppedRecurringCount} 個</p>
+            {recurring.length === 0 ? <p className="text-sm text-slate-400">目前沒有生效中的固定規則。</p> : recurring.map((record) => (
             <div key={record.id} className="mb-2 rounded-2xl bg-slate-800 p-3">
               <div className="flex items-center justify-between gap-3">
                 <div><p className="font-bold">{record.title}</p><p className="text-xs text-slate-400">{record.category}・{formatMoney(record.amount)}・{record.effectiveTo === null ? "生效中" : `已於 ${record.effectiveTo} 停止`}</p></div>
@@ -309,10 +408,12 @@ export default function SettingsPage() {
               </div>
             </div>
           ))}
-        </CollapsibleSection>
+          </Section>
+        ) : null}
 
-        <Section title="4. 資料備份與還原" description="新版備份包含記帳、每月預算與分類設定；舊 v2／v3 備份仍可匯入。">
-          <button type="button" onClick={downloadBackup} className="w-full rounded-2xl bg-white px-4 py-3 font-black text-slate-950">下載備份檔</button>
+        {activeSection === "backup" ? (
+          <Section description="備份包含記帳、每月預算與分類設定；舊 v2／v3 備份仍可匯入。">
+            <button type="button" onClick={downloadBackup} className="w-full rounded-2xl bg-white px-4 py-3 font-black text-slate-950">下載備份檔</button>
           <label className="mt-3 block rounded-2xl border border-dashed border-slate-600 px-4 py-3 text-center text-sm font-bold text-sky-300">
             選擇 JSON 備份
             <input ref={fileInputRef} type="file" accept="application/json,.json" className="sr-only" onChange={(event) => { const file = event.target.files?.[0]; if (file) void inspectImport(file); }} />
@@ -327,21 +428,86 @@ export default function SettingsPage() {
               <button type="button" onClick={restoreImport} className="mt-3 w-full rounded-xl bg-sky-400 px-4 py-3 font-black text-slate-950">確認還原</button>
             </div>
           ) : null}
-        </Section>
+          </Section>
+        ) : null}
 
-        <Section title="5. 資料狀態" description="所有資料只儲存在目前瀏覽器。">
-          <div className="grid grid-cols-2 gap-3 text-center">
-            <div className="rounded-2xl bg-slate-800 p-3"><p className="text-2xl font-black">{records.length}</p><p className="text-xs text-slate-400">原始記帳規則</p></div>
-            <div className="rounded-2xl bg-slate-800 p-3"><p className="text-2xl font-black">{quarantineCount}</p><p className="text-xs text-slate-400">隔離資料</p></div>
-          </div>
-        </Section>
+        {activeSection === "data" ? (
+          <Section description="所有資料只儲存在目前瀏覽器。">
+            <div className="grid grid-cols-2 gap-3 text-center">
+              <div className="rounded-2xl bg-white/5 p-3"><p className="text-2xl font-black">{records.length}</p><p className="text-xs text-slate-400">原始記帳規則</p></div>
+              <div className="rounded-2xl bg-white/5 p-3"><p className="text-2xl font-black">{quarantineCount}</p><p className="text-xs text-slate-400">隔離資料</p></div>
+            </div>
 
-        <Section title="6. 清除全部資料" description="只清除記帳資料；預算與分類設定會保留。">
-          <button type="button" onClick={clearAll} className="w-full rounded-2xl bg-red-500/10 px-4 py-3 font-black text-red-300 ring-1 ring-red-400/30">清除全部記帳資料</button>
-        </Section>
+            {duplicateCandidates.length > 0 ? (
+              <div className="mt-6 border-t border-white/10 pt-5">
+                <h2 className="font-black text-amber-200">檢查疑似重複固定收支</h2>
+                <p className="mt-2 text-sm text-slate-400">以下規則的內容、排程與生效期間有重疊。請先核對是否原本就是兩筆收支，再選擇要保留的版本。</p>
+                <div className="mt-4 space-y-4">
+                  {duplicateCandidates.map((candidate) => (
+                    <div key={candidate.original.id + ":" + candidate.duplicate.id} className="rounded-2xl bg-amber-400/5 p-3 ring-1 ring-amber-300/20">
+                      <p className="mb-3 text-xs font-bold text-amber-200">重疊期間：{candidate.overlapFrom} 至 {candidate.overlapTo ?? "持續生效"}</p>
+                      {[candidate.original, candidate.duplicate].map((record, index) => {
+                        const other = index === 0 ? candidate.duplicate : candidate.original;
+                        return (
+                          <div key={record.id} className="mb-3 rounded-xl bg-slate-800 p-3 last:mb-0">
+                            <p className="font-bold">紀錄 {index === 0 ? "A" : "B"}：{record.title}</p>
+                            <p className="mt-1 text-sm text-slate-300">{record.recordType === "income" ? "收入" : "支出"}・{formatMoney(record.amount)}・{record.category}</p>
+                            <p className="mt-1 text-xs text-slate-400">{describeRecurringSchedule(record)}</p>
+                            <p className="mt-1 text-xs text-slate-400">生效：{record.effectiveFrom} 至 {record.effectiveTo ?? "持續生效"}</p>
+                            <p className="mt-1 break-all text-xs text-slate-500">ID：{record.id}</p>
+                            <button type="button" onClick={() => resolveDuplicate(other, record)} className="mt-3 min-h-10 w-full rounded-xl bg-slate-700 px-3 py-2 text-sm font-bold text-sky-200">保留這筆，隔離另一筆</button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
 
-        <Section title="7. App 資訊" description={`${APP_INFO.name} ${APP_INFO.version}・${APP_INFO.releaseStage}`}>
-          <ul className="space-y-2 text-sm text-slate-300">
+            <div className="mt-6 border-t border-white/10 pt-5">
+              <h2 className="font-black">隔離資料</h2>
+              <p className="mt-2 text-sm text-slate-400">隔離原始資料保留於本機，不包含在一般備份檔中。清除記帳資料不會刪除隔離資料。</p>
+              {isolatedDuplicates.length > 0 ? (
+                <div className="mt-4 space-y-3">
+                  {isolatedDuplicates.map((isolated, index) => {
+                    const details = getIsolatedRecordDetails(isolated);
+                    return (
+                      <div key={isolated.quarantinedAt + ":" + index} className="rounded-2xl bg-slate-800 p-3">
+                        <p className="font-bold">{getIsolatedRecordTitle(isolated)}</p>
+                        {details ? (
+                          <>
+                            <p className="mt-1 text-sm text-slate-300">{formatMoney(details.amount)}・{details.category}</p>
+                            <p className="mt-1 text-xs text-slate-400">生效：{details.effectiveFrom} 至 {details.effectiveTo ?? "持續生效"}</p>
+                            <p className="mt-1 break-all text-xs text-slate-500">ID：{details.id}</p>
+                          </>
+                        ) : null}
+                        <p className="mt-1 text-xs text-slate-400">已確認隔離的疑似重複固定規則</p>
+                        <button type="button" onClick={() => restoreIsolatedDuplicate(isolated)} className="mt-3 min-h-10 w-full rounded-xl bg-slate-700 px-3 py-2 text-sm font-bold text-sky-200">復原這筆固定規則</button>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : null}
+              {quarantineCount > 0 ? (
+                <>
+                  <button type="button" onClick={downloadQuarantinedData} className="mt-3 min-h-12 w-full rounded-2xl bg-slate-800 px-4 py-3 text-sm font-bold text-sky-300">下載隔離原始資料</button>
+                  <p className="mt-2 text-xs text-slate-500">此檔供保存與核對原始資料，不能當作一般記帳備份還原。</p>
+                </>
+              ) : null}
+            </div>
+
+            <div className="mt-6 border-t border-white/10 pt-5">
+              <h2 className="font-black text-red-300">清除記帳資料</h2>
+              <p className="mt-2 text-sm text-slate-400">只清除記帳資料；預算與分類設定會保留。系統會先建立本機原始資料備份。</p>
+              <button type="button" onClick={clearAll} className="mt-3 min-h-12 w-full rounded-2xl bg-red-500/10 px-4 py-3 font-black text-red-300 ring-1 ring-red-400/30">清除全部記帳資料</button>
+            </div>
+          </Section>
+        ) : null}
+
+        {activeSection === "about" ? (
+          <Section description={APP_INFO.name + " " + APP_INFO.version + "・" + APP_INFO.releaseStage}>
+            <ul className="space-y-2 text-sm text-slate-300">
             <li>資料儲存方式：本機瀏覽器</li>
             <li>尚未支援跨裝置同步</li>
             <li>建議定期下載 JSON 備份，並保存於其他安全位置</li>
@@ -360,7 +526,8 @@ export default function SettingsPage() {
               <li>確認記帳、預算與分類後，再開始使用正式網址。</li>
             </ol>
           </div>
-        </Section>
+          </Section>
+        ) : null}
 
         {deleteCandidate ? (
           <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-slate-950/85 px-5" role="dialog" aria-modal="true" aria-labelledby="delete-rule-title">
@@ -373,7 +540,7 @@ export default function SettingsPage() {
               </div>
               <p className="mt-4 text-sm text-slate-300">此操作會永久刪除這個規則版本，過去與未來的顯示都會消失。</p>
               <p className="mt-2 text-sm font-black text-red-200">無法從畫面復原。</p>
-              <p className="mt-3 text-sm font-bold text-amber-200">目前 v2 schema 沒有版本鏈識別碼，因此預設只刪除目前選取的版本；其他舊版或新版規則不會被刪除。</p>
+              <p className="mt-3 text-sm font-bold text-amber-200">只刪除目前選取的版本；其他歷史與新版規則會保留。</p>
               <div className="mt-5 flex gap-3">
                 <button type="button" onClick={closePermanentDelete} className="min-h-12 flex-1 rounded-2xl bg-slate-800 px-4 py-3 font-black">取消</button>
                 <button type="button" onClick={permanentlyDeleteSelectedVersion} className="min-h-12 flex-1 rounded-2xl bg-red-600 px-4 py-3 font-black text-white shadow-lg shadow-red-950/40 ring-1 ring-red-300/30">永久刪除</button>
@@ -388,52 +555,45 @@ export default function SettingsPage() {
   );
 }
 
-function Section({ title, description, children }: { title: string; description: string; children: React.ReactNode }) {
+function Section({ description, children }: { description: string; children: React.ReactNode }) {
   return (
-    <section className="mb-5 rounded-3xl bg-white/5 p-5 ring-1 ring-white/10">
-      <h2 className="text-lg font-black">{title}</h2>
-      <p className="mb-4 mt-1 text-sm text-slate-400">{description}</p>
+    <section>
+      <p className="mb-4 text-sm text-slate-400">{description}</p>
       {children}
     </section>
   );
 }
 
-function CollapsibleSection({
-  title,
-  description,
-  summary,
-  isExpanded,
-  onToggle,
-  accessibleName,
-  children,
-}: {
-  title: string;
-  description: string;
-  summary: string;
-  isExpanded: boolean;
-  onToggle: () => void;
-  accessibleName: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <section className="mb-5 overflow-hidden rounded-3xl bg-white/5 ring-1 ring-white/10">
-      <button
-        type="button"
-        onClick={onToggle}
-        aria-expanded={isExpanded}
-        aria-label={`${accessibleName}，目前${isExpanded ? "已展開" : "已收合"}`}
-        className="flex min-h-20 w-full items-center justify-between gap-4 px-5 py-4 text-left"
-      >
-        <span>
-          <span className="block text-lg font-black">{title}</span>
-          <span className="mt-1 block text-sm text-slate-400">{description}</span>
-          <span className="mt-2 block text-xs font-bold text-sky-300">{summary}</span>
-        </span>
-        <span aria-hidden="true" className="shrink-0 text-xl text-slate-300">
-          {isExpanded ? "↑" : "↓"}
-        </span>
-      </button>
-      {isExpanded ? <div className="border-t border-white/10 px-5 pb-5 pt-4">{children}</div> : null}
-    </section>
-  );
+function describeRecurringSchedule(record: CashRecord) {
+  if (record.frequency === "monthly") return "每月 " + record.dayOfMonth + " 日";
+  if (record.frequency === "weekly") return "每週：" + record.dayOfWeek;
+  if (record.frequency === "yearly") return "每年 " + record.monthOfYear + " 月 " + record.dayOfMonth + " 日";
+  return record.date;
+}
+
+function getIsolatedRecordTitle(isolated: QuarantinedRecord) {
+  const value = isolated.value;
+  if (typeof value === "object" && value !== null && "title" in value &&
+      typeof value.title === "string") {
+    return value.title;
+  }
+  return "固定規則";
+}
+
+function getIsolatedRecordDetails(isolated: QuarantinedRecord) {
+  if (typeof isolated.value !== "object" || isolated.value === null) return null;
+  const value = isolated.value as Record<string, unknown>;
+  if (typeof value.amount !== "number" || !Number.isSafeInteger(value.amount) ||
+      value.amount <= 0 || typeof value.category !== "string" ||
+      typeof value.effectiveFrom !== "string" || typeof value.id !== "string" ||
+      (value.effectiveTo !== null && typeof value.effectiveTo !== "string")) {
+    return null;
+  }
+  return {
+    amount: value.amount,
+    category: value.category,
+    effectiveFrom: value.effectiveFrom,
+    effectiveTo: value.effectiveTo,
+    id: value.id,
+  };
 }

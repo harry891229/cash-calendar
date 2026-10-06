@@ -10,14 +10,16 @@ import {
 import { previewCashRecordsImport } from "@/lib/storage";
 
 describe("central app release information", () => {
-  it("exposes the v5 production version from one module", () => {
+  it("exposes the v6 production version from one module", () => {
     expect(APP_INFO).toMatchObject({
       name: "記帳月曆",
       shortName: "記帳",
-      version: "v5.0.0",
+      version: "v6.0.0",
       releaseStage: "production",
     });
     expect(APP_VERSION).toBe(APP_INFO.version);
+    const workerSource = readFileSync(new URL("../../public/sw.js", import.meta.url), "utf8");
+    expect(workerSource).toContain(`const CACHE_VERSION = "cash-calendar-${APP_VERSION}";`);
   });
 });
 

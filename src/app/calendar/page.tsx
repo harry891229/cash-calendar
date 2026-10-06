@@ -1,13 +1,16 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useReducer, useState } from "react";
 import Link from "next/link";
 import BottomNav from "@/components/BottomNav";
+import CategorySpendingList from "@/components/CategorySpendingList";
+import { calendarViewReducer, createCalendarView, getCalendarDetails } from "@/lib/calendar-view";
+import { getCategoryIcon } from "@/lib/categories";
+import { stopRecurringRule } from "@/lib/recurring-rules";
 import { toDateText } from "@/lib/date";
 import { formatMoney, sumSignedAmounts } from "@/lib/money";
 import {
   calculateMonthSummary,
-  getCategoryIcon,
   getEventsForDate,
   getFrequencyText,
 } from "@/lib/recurrence";
@@ -51,10 +54,9 @@ function getMonthTitle(date: Date) {
 
 export default function CalendarPage() {
   const [records, setRecords] = useState<CashRecord[]>([]);
-  const [currentMonth, setCurrentMonth] = useState(() => new Date());
-  const [selectedDateText, setSelectedDateText] = useState(() =>
-    toDateText(new Date())
-  );
+  const [view, dispatch] = useReducer(calendarViewReducer, undefined, () => createCalendarView());
+  const currentMonth = view.month;
+  const selectedDateText = view.selectedDateText;
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -104,12 +106,9 @@ export default function CalendarPage() {
   const monthExpense = monthSummary.totalExpense;
   const monthBalance = monthSummary.balance;
 
-  const selectedDay = calendarDays.find(
-    (day) => day.dateText === selectedDateText
-  );
-
-  const selectedRecords = selectedDay?.records ?? [];
-  const selectedDayTotal = sumSignedAmounts(selectedRecords);
+  const details = getCalendarDetails(records, view);
+  const selectedRecords = details.mode === "day" ? details.events : [];
+  const selectedDayTotal = details.mode === "day" ? details.total : 0;
 
   function saveRecords(nextRecords: CashRecord[]) {
     setRecords(nextRecords);
@@ -119,15 +118,12 @@ export default function CalendarPage() {
   function handleDeleteRecord(recordId: string, recordTitle: string) {
     const target = records.find((record) => record.id === recordId);
     if (target && target.frequency !== "once") {
-      const todayText = toDateText(new Date());
-      const effectiveTo =
-        todayText < target.effectiveFrom ? target.effectiveFrom : todayText;
+      if (target.effectiveTo !== null) {
+        alert("此固定規則版本已停止，歷史紀錄會保留。");
+        return;
+      }
       if (!confirm(`確定停止「${recordTitle}」嗎？過去紀錄會保留。`)) return;
-      saveRecords(
-        records.map((record) =>
-          record.id === recordId ? { ...record, effectiveTo } : record
-        )
-      );
+      saveRecords(stopRecurringRule(records, recordId, new Date()));
       return;
     }
 
@@ -142,29 +138,11 @@ export default function CalendarPage() {
   }
 
   function goPreviousMonth() {
-    setCurrentMonth((oldDate) => {
-      const nextDate = new Date(
-        oldDate.getFullYear(),
-        oldDate.getMonth() - 1,
-        1
-      );
-
-      setSelectedDateText(toDateText(nextDate));
-      return nextDate;
-    });
+    dispatch({ type: "shiftMonth", offset: -1 });
   }
 
   function goNextMonth() {
-    setCurrentMonth((oldDate) => {
-      const nextDate = new Date(
-        oldDate.getFullYear(),
-        oldDate.getMonth() + 1,
-        1
-      );
-
-      setSelectedDateText(toDateText(nextDate));
-      return nextDate;
-    });
+    dispatch({ type: "shiftMonth", offset: 1 });
   }
 
   return (
@@ -220,7 +198,12 @@ export default function CalendarPage() {
           </div>
         </section>
 
-        <section className="rounded-[2rem] bg-white/5 p-4 shadow-xl ring-1 ring-white/10">
+        <section className="rounded-[2rem] bg-white/5 p-4 shadow-xl ring-1 ring-white/10" aria-label="月曆">
+          <div className="mb-3 flex justify-center">
+            <button type="button" onClick={() => dispatch({ type: "monthCategories" })} aria-pressed={details.mode === "month"} aria-controls="calendar-details" className={details.mode === "month" ? "min-h-10 rounded-full bg-sky-400 px-5 text-sm font-bold text-slate-950" : "min-h-10 rounded-full bg-sky-400/10 px-5 text-sm font-bold text-sky-300"}>
+              本月分類
+            </button>
+          </div>
           <div
             className="grid gap-1 text-center text-[11px] text-slate-400"
             style={{ gridTemplateColumns: "repeat(7, minmax(0, 1fr))" }}
@@ -249,7 +232,9 @@ export default function CalendarPage() {
                 <button
                   key={day.dateText}
                   type="button"
-                  onClick={() => setSelectedDateText(day.dateText)}
+                  aria-label={`${day.dateText} 明細`}
+                  aria-pressed={isSelected}
+                  onClick={() => dispatch({ type: "selectDate", dateText: day.dateText })}
                   className={
                     isSelected
                       ? "h-12 overflow-hidden rounded-xl border border-sky-300 bg-sky-400/15 px-1.5 py-1 text-left shadow-[0_0_16px_rgba(56,189,248,0.25)]"
@@ -285,7 +270,17 @@ export default function CalendarPage() {
           </div>
         </section>
 
-        <section className="mt-5 flex-1">
+        <section id="calendar-details" className="mt-5 flex-1">
+          {details.mode === "month" ? (
+            <>
+              <div className="mb-3">
+                <h2 className="text-lg font-bold">{getMonthTitle(currentMonth)}分類支出</h2>
+                <p className="mt-1 text-xs text-slate-400">包含固定支出與單次支出・點分類查看明細</p>
+              </div>
+              <CategorySpendingList items={details.categories} expandedCategory={view.expandedCategory} onToggle={(category) => dispatch({ type: "toggleCategory", category })} />
+            </>
+          ) : (
+            <>
           <div className="mb-3 flex items-center justify-between">
             <div>
               <h2 className="text-lg font-bold">當日明細</h2>
@@ -367,7 +362,7 @@ export default function CalendarPage() {
                           }
                           className="rounded-full bg-red-500/10 px-3 py-1 text-xs font-bold text-red-300"
                         >
-                          刪除
+                          {record.frequency === "once" ? "刪除" : "停止"}
                         </button>
                       </div>
                     </div>
@@ -375,6 +370,8 @@ export default function CalendarPage() {
                 </div>
               ))}
             </div>
+          )}
+            </>
           )}
         </section>
 
